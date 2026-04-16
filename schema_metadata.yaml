@@ -1,0 +1,2256 @@
+# =============================================================================
+# P2P Procure-to-Pay Semantic Model for Cortex Analyst
+# All INFORMATION_MART views + prescriptive instructions for actionable answers
+# =============================================================================
+
+name: "P2P Procure-to-Pay Analytics"
+description: "Procure-to-Pay and Invoice-to-Pay analytics. Invoice status (Open, Due, Overdue, Disputed, Paid), vendor spend, payment performance, aging, PO linkage, cost reduction opportunities."
+
+custom_instructions: |
+  PRESCRIPTIVE RESPONSE RULES (CRITICAL):
+  - NEVER give generic advice like "review the data below" or "consider setting alerts" without citing SPECIFIC numbers from the query results.
+  - For "cost reduction" or "reduce procurement costs" questions: USE the verified query cost_reduction_opportunities. It returns OPPORTUNITY_AREA, AMOUNT, FINDING, RECOMMENDED_ACTION. Cite those exact rows in your Prescriptive section.
+  - For ANY period comparison question: ALWAYS use the matching verified query. "Why is spend higher this month" (without "or lower"): USE why_spend_higher_this_month_returns ONLY drivers where current > previous. "Why is spend higher or lower" / "is spend higher": use spend_this_month_vs_last or why_spend_higher_lower_this_month. Return ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND so the UI shows comparison charts.
+  - DATE/TIME: fact_invoices has posting_date. Use DATETRUNC(month, posting_date) for month; DATETRUNC(quarter, posting_date) for quarter; DATETRUNC(year, posting_date) for year. Compare to GETDATE() or DATEADD for previous period. ap_balance has year and month.
+  - In Prescriptive: List 3-5 SPECIFIC areas. For EACH: (1) State EXACT finding with numbers; (2) State CONCRETE action.
+  - ALWAYS cite specific amounts, percentages, vendor names, or counts from the query result.
+  - Invoice status: Open, Due, Overdue, Disputed, Paid. PO_PURPOSE: Goods, Services, Consumables, Capital, Subcontracting.
+  - Exclude CANCELLED and REJECTED from spend metrics unless specifically asked.
+  - CASH FLOW FORECAST (CRITICAL): For "Forecast cash outflow for the next 7, 14, 30, 60, and 90 days" you MUST use verified query cash_flow_forecast (table cash_flow_forecast). It returns FORECAST_BUCKET, INVOICE_COUNT, TOTAL_AMOUNT, EARLIEST_DUE, LATEST_DUE. Present ALL rows: TOTAL_UNPAID, OVERDUE_NOW, DUE_7_DAYS, DUE_14_DAYS, DUE_30_DAYS, DUE_60_DAYS, DUE_90_DAYS, BEYOND_90_DAYS (and PROCESSING_LAG_DAYS if present). Do NOT aggregate to a single total or single bar; show the full bucket breakdown in both the table and the chart. Then give 3-5 prescriptive recommendations.
+  - PAYMENT TIMING AND EARLY PAYMENT DISCOUNTS (CRITICAL): For "Which invoices should we pay early to capture discounts?" you MUST use verified query early_payment_candidates. Do NOT say the model lacks discount data—the query returns DOCUMENT_NUMBER, VENDOR_NAME, INVOICE_AMOUNT_LOCAL, DUE_DATE, SAVINGS_IF_2PCT_DISCOUNT, EARLY_PAY_PRIORITY. Present that table and cite it. For "optimal payment timing", "payment strategy for this week", "when should we pay": USE verified query payment_timing_recommendation (RECOMMENDATION, AMOUNT, INVOICE_COUNT, RATIONALE). NEVER claim payment schedules or discount data are missing.
+  - GR/IR ROOT CAUSE & FOLLOW-UP: For GR/IR questions that ask about root causes (missing goods receipt, missing invoice, price/quantity mismatch) or vendor follow-up messages, USE gr_ir_aging, gr_ir_outstanding, gr_ir_working_capital_release, and gr_ir_hotspots_clearing_plan as needed. Do NOT say the data is missing. Instead, clearly explain that you are inferring likely root causes from aging and outstanding balances, and then provide concrete remediation steps or example email templates.
+  
+  CRITICAL SQL GENERATION RULES (For Genie/LLM):
+  - DO NOT use schema prefix like INFORMATION_MART. Use table names directly.
+  - Tables: fact_all_sources_vw, dim_vendor_vw (lowercase, no schema prefix)
+  - NEVER use CTEs (WITH clauses) - they cause column case sensitivity errors
+  - Use derived tables instead: SELECT ... FROM (SELECT ...) AS derived
+  - ALWAYS use UPPERCASE for column names
+  - NEVER use non-existent columns: INVOICE_DATE, ACTIVE_FLAG, INVOICE_ID
+  - Use POSTING_DATE instead of INVOICE_DATE
+  - Use INVOICE_NUMBER instead of INVOICE_ID
+  - Do NOT filter on vendor ACTIVE_FLAG (does not exist)
+
+tables:
+  - name: fact_invoices
+    description: "Unified invoice fact with status, amounts, PO linkage, aging. Use for spend, vendor, status, overdue, disputed. posting_date = when invoice was posted; use for this month, last month, YTD."
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: fact_all_sources_vw
+    time_dimensions:
+      - name: posting_date
+        expr: POSTING_DATE
+        description: "Invoice posting date. Use DATETRUNC(month|'quarter'|'year', posting_date) to compare current vs previous period."
+        data_type: date
+        synonyms: ["invoice posted date", "posting date", "when posted", "bill date"]
+    dimensions:
+      - name: vendor_id
+        expr: VENDOR_ID
+        data_type: varchar
+        synonyms: ["supplier id", "vendor number", "vendor code"]
+      - name: company_code
+        expr: COMPANY_CODE
+        data_type: number
+        synonyms: ["company code", "entity code", "org code"]
+      - name: invoice_status
+        expr: INVOICE_STATUS
+        data_type: varchar
+        synonyms: ["bill status", "payment state", "invoice state"]
+      - name: po_purpose
+        expr: PO_PURPOSE
+        data_type: varchar
+        synonyms: ["procurement category", "order purpose", "goods or services type"]
+      - name: purchase_order
+        expr: PURCHASE_ORDER_REFERENCE
+        data_type: varchar
+        synonyms: ["PO reference", "order reference", "PO ref"]
+      - name: region
+        expr: REGION
+        data_type: varchar
+        synonyms: ["vendor region", "geographic region"]
+    measures:
+      - name: invoice_amount
+        expr: INVOICE_AMOUNT_LOCAL
+        default_aggregation: sum
+        data_type: number
+        synonyms: ["spend", "procurement spend", "invoice value", "total invoice amount"]
+      - name: po_amount
+        expr: PO_AMOUNT
+        default_aggregation: sum
+        data_type: number
+        synonyms: ["PO value", "purchase order value", "order total"]
+      - name: aging_days
+        expr: AGING_DAYS
+        default_aggregation: avg
+        data_type: number
+        synonyms: ["days overdue", "past due days", "invoice age days"]
+  - name: ap_balance
+    description: "AP balance and invoice count by year/month"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: accounts_payable_balance_vw
+    dimensions:
+      - name: year
+        expr: YEAR
+        data_type: number
+        synonyms: ["balance year", "AP year"]
+      - name: month
+        expr: MONTH
+        data_type: number
+        synonyms: ["balance month", "AP month"]
+    measures:
+      - name: ap_balance
+        expr: AP_BALANCE
+        default_aggregation: sum
+        data_type: number
+        synonyms: ["payables balance", "AP total", "outstanding payables"]
+      - name: invoice_count
+        expr: INVOICE_COUNT
+        default_aggregation: sum
+        data_type: number
+        synonyms: ["AP invoice count", "payables invoice count"]
+  - name: days_payable_outstanding
+    description: "DPO by invoice. Columns: INVOICE_NUMBER, YEAR, MONTH, AVG_TRADE_PAYABLES, COGS_AMOUNT, DPO"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: days_payable_outstanding_vw
+  - name: dim_company_code
+    description: "Company code dimension. Columns: COMPANY_CODE, SYSTEM"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: dim_company_code_vw
+    primary_key:
+      columns:
+        - company_code
+    dimensions:
+      - name: company_code
+        expr: COMPANY_CODE
+        data_type: number
+        synonyms: ["entity code", "org code"]
+  - name: dim_po
+    description: "Purchase order dimension. Columns: PURCHASE_ORDER_NUMBER, PO_ITEM, PO_AMOUNT, VENDOR_ID, COMPANY_CODE"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: dim_po_vw
+    primary_key:
+      columns:
+        - purchase_order_number
+        - po_item
+    dimensions:
+      - name: purchase_order_number
+        expr: PURCHASE_ORDER_NUMBER
+        data_type: varchar
+        synonyms: ["PO number", "order number"]
+      - name: po_item
+        expr: PO_ITEM
+        data_type: varchar
+        synonyms: ["line item", "item number", "PO line"]
+  - name: dim_vendor
+    description: "Vendor dimension. Columns: VENDOR_ID, VENDOR_NAME, SYSTEM"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: dim_vendor_vw
+    primary_key:
+      columns:
+        - vendor_id
+    dimensions:
+      - name: vendor_id
+        expr: VENDOR_ID
+        data_type: varchar
+        synonyms: ["supplier id", "vendor number"]
+      - name: vendor_name
+        expr: VENDOR_NAME
+        data_type: varchar
+        synonyms: ["supplier name", "vendor label"]
+  - name: duplicate_payments
+    description: "Duplicate payments. Columns: INVOICE_NUMBER, YEAR, MONTH, DUPLICATE_PAYMENT_AMOUNT, TOTAL_PAYMENTS, DUPLICATE_PAYMENT_RATE"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: duplicate_payments_for_invoice_vw
+  - name: invoice_status_history
+    description: "Full invoice status history. Columns: INVOICE_NUMBER, STATUS, EFFECTIVE_DATE, PO_PURPOSE, PO_AMOUNT"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: invoice_status_history_vw
+  - name: fact_po_level
+    description: "PO-level fact. Columns: POSTING_YEAR, POSTING_MONTH, DELIVERY_DATE, RECEIVED_QTY, ORDERED_QTY, PO_AMOUNT"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: fact_sap_po_level_vw
+  - name: full_payment_rate
+    description: "Full payment rate. Columns: YEAR, MONTH, FULL_PAID_INVOICES, TOTAL_CLEARED_INVOICES, FULL_PAYMENT_RATE_PCT"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: full_payment_rate_vw
+  - name: gr_ir_aging
+    description: "GR/IR aging. Columns: YEAR, MONTH, AGE_DAYS, TOTAL_GRIR_BALANCE, GRIR_OVER_30/60/90"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: gr_ir_aging_vw
+    primary_key:
+      columns:
+        - year
+        - month
+        - age_days
+    dimensions:
+      - name: year
+        expr: YEAR
+        data_type: number
+        synonyms: ["grir year"]
+      - name: month
+        expr: MONTH
+        data_type: number
+        synonyms: ["grir month"]
+      - name: age_days
+        expr: AGE_DAYS
+        data_type: number
+        synonyms: ["age days", "aging bucket days"]
+    measures:
+      - name: total_grir_balance
+        expr: TOTAL_GRIR_BALANCE
+        default_aggregation: sum
+        data_type: number
+        synonyms: ["grir balance", "total grir"]
+      - name: grir_over_30
+        expr: GRIR_OVER_30
+        default_aggregation: sum
+        data_type: number
+      - name: grir_over_60
+        expr: GRIR_OVER_60
+        default_aggregation: sum
+        data_type: number
+      - name: grir_over_90
+        expr: GRIR_OVER_90
+        default_aggregation: sum
+        data_type: number
+  - name: gr_ir_outstanding
+    description: "GR/IR outstanding. Columns: YEAR, MONTH, INVOICE_COUNT, TOTAL_GRIR_BLNC"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: gr_ir_outstanding_balance_vw
+    primary_key:
+      columns:
+        - year
+        - month
+    dimensions:
+      - name: year
+        expr: YEAR
+        data_type: number
+      - name: month
+        expr: MONTH
+        data_type: number
+    measures:
+      - name: invoice_count
+        expr: INVOICE_COUNT
+        default_aggregation: sum
+        data_type: number
+      - name: total_grir_balance
+        expr: TOTAL_GRIR_BLNC
+        default_aggregation: sum
+        data_type: number
+  - name: late_accruals
+    description: "Late accruals. Columns: YEAR, MONTH, LATE_ACCRUAL_AMOUNT, LATE_ACCRUAL_RATE_PCT"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: late_accruals_vw
+  - name: late_payment_amount
+    description: "Late payment. Columns: YEAR, MONTH, LATE_PAYMENT_AMOUNT, LATE_PAYMENT_COUNT, LATE_PAYMENT_RATE_PCT"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: late_payment_amount_vw
+    primary_key:
+      columns:
+        - year
+        - month
+    dimensions:
+      - name: year
+        expr: YEAR
+        data_type: number
+      - name: month
+        expr: MONTH
+        data_type: number
+    measures:
+      - name: late_payment_amount
+        expr: LATE_PAYMENT_AMOUNT
+        default_aggregation: sum
+        data_type: number
+      - name: late_payment_count
+        expr: LATE_PAYMENT_COUNT
+        default_aggregation: sum
+        data_type: number
+      - name: late_payment_rate_pct
+        expr: LATE_PAYMENT_RATE_PCT
+        default_aggregation: avg
+        data_type: number
+  - name: net_early_payment_benefit
+    description: "Early payment benefit. Columns: TOTAL_NET_BENEFIT, TOTAL_SPEND, NEPBI_PERCENT"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: net_early_payment_benefit_index_vw
+  - name: on_time_payment_rate
+    description: "On-time payment rate. Columns: YEAR, MONTH, ON_TIME_PAYMENTS, TOTAL_PAYMENTS, ON_TIME_PAYMENT_RATE_PCT"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: on_time_payment_rate_vw
+  - name: partial_payment_rate
+    description: "Partial payment rate. Columns: YEAR, MONTH, PARTIAL_PAID_INVOICES, PARTIAL_PAYMENT_RATE_PCT"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: partial_payment_rate_vw
+  - name: payment_predictability
+    description: "Payment predictability. Columns: POSTING_YEAR, POSTING_MONTH, PAYMENT_PREDICTABILITY_INDEX, INTERPRETATION"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: payment_predictability_index_vw
+  - name: payment_cycle_time
+    description: "Payment cycle time. Columns: YEAR, MONTH, AVG_PAYMENT_CYCLE_TIME_DAYS, CLEARED_INVOICES"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: payment_processing_cycle_time_vw
+  - name: supplier_delivery_accuracy
+    description: "Supplier delivery. Columns: YEAR, MONTH, ON_TIME_DELIVERIES, TOTAL_DELIVERIES, DELIVERY_ACCURACY_PCT"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: supplier_delivery_accuracy_index_vw
+  - name: weighted_dpo
+    description: "Weighted DPO. Columns: YEAR, MONTH, TOTAL_PAYABLES, TOTAL_COGS, WEIGHTED_DPO"
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: weighted_days_payable_outstanding_vw
+    primary_key:
+      columns:
+        - year
+        - month
+    dimensions:
+      - name: year
+        expr: YEAR
+        data_type: number
+      - name: month
+        expr: MONTH
+        data_type: number
+    measures:
+      - name: total_payables
+        expr: TOTAL_PAYABLES
+        default_aggregation: sum
+        data_type: number
+      - name: total_cogs
+        expr: TOTAL_COGS
+        default_aggregation: sum
+        data_type: number
+      - name: weighted_dpo
+        expr: WEIGHTED_DPO
+        default_aggregation: avg
+        data_type: number
+  - name: cash_flow_unpaid_obligations
+    description: "Unpaid invoice obligations (Open, Due, Overdue) for cash flow forecasting and payment timing. Use for: cash flow forecast 7/14/30/60/90 days, optimal payment timing, which invoices to pay early, early payment discounts. Columns: DOCUMENT_NUMBER, VENDOR_ID, INVOICE_AMOUNT_LOCAL, DUE_DATE, INVOICE_STATUS, DAYS_UNTIL_DUE. Use verified queries cash_flow_forecast, early_payment_candidates, payment_timing_recommendation for best results."
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: cash_flow_unpaid_obligations_vw
+    primary_key:
+      columns:
+        - document_number
+    dimensions:
+      - name: document_number
+        expr: DOCUMENT_NUMBER
+        data_type: varchar
+        synonyms: ["invoice number", "document"]
+      - name: vendor_id
+        expr: VENDOR_ID
+        data_type: varchar
+        synonyms: ["supplier id", "vendor"]
+      - name: due_date
+        expr: DUE_DATE
+        data_type: date
+        synonyms: ["invoice due date"]
+      - name: invoice_status
+        expr: INVOICE_STATUS
+        data_type: varchar
+        synonyms: ["status", "payment status"]
+      - name: days_until_due
+        expr: DAYS_UNTIL_DUE
+        data_type: number
+        synonyms: ["days to due date"]
+    measures:
+      - name: invoice_amount
+        expr: INVOICE_AMOUNT_LOCAL
+        default_aggregation: sum
+        data_type: number
+        synonyms: ["invoice amount", "unpaid amount"]
+
+  - name: cash_flow_forecast
+    description: "Pre-built cash flow forecast by time bucket. Columns: FORECAST_BUCKET (TOTAL_UNPAID, OVERDUE_NOW, DUE_7_DAYS, DUE_14_DAYS, DUE_30_DAYS, DUE_60_DAYS, DUE_90_DAYS, BEYOND_90_DAYS, PROCESSING_LAG_DAYS), INVOICE_COUNT, TOTAL_AMOUNT, EARLIEST_DUE, LATEST_DUE. Use for 'Forecast cash outflow for the next 7, 14, 30, 60, and 90 days'."
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: cash_flow_forecast_vw
+    primary_key:
+      columns:
+        - forecast_bucket
+    dimensions:
+      - name: forecast_bucket
+        expr: FORECAST_BUCKET
+        data_type: varchar
+        synonyms: ["time bucket code", "bucket"]
+      - name: earliest_due
+        expr: EARLIEST_DUE
+        data_type: date
+        synonyms: ["earliest due date"]
+      - name: latest_due
+        expr: LATEST_DUE
+        data_type: date
+        synonyms: ["latest due date"]
+    measures:
+      - name: invoice_count
+        expr: INVOICE_COUNT
+        default_aggregation: sum
+        data_type: number
+        synonyms: ["number of invoices", "invoice volume"]
+      - name: total_amount
+        expr: TOTAL_AMOUNT
+        default_aggregation: sum
+        data_type: number
+        synonyms: ["cash outflow amount", "bucket amount"]
+
+  - name: early_payment_candidates
+    description: "Top invoices to pay early for discount capture. Columns: DOCUMENT_NUMBER, VENDOR_ID, VENDOR_NAME, INVOICE_AMOUNT_LOCAL, DUE_DATE, DAYS_UNTIL_DUE, SAVINGS_IF_2PCT_DISCOUNT, VENDOR_TIER, EARLY_PAY_PRIORITY. Use for 'Which invoices should we pay early to capture discounts?'."
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: early_payment_candidates_vw
+    primary_key:
+      columns:
+        - document_number
+    dimensions:
+      - name: document_number
+        expr: DOCUMENT_NUMBER
+        data_type: varchar
+        synonyms: ["invoice number", "document"]
+      - name: vendor_id
+        expr: VENDOR_ID
+        data_type: varchar
+        synonyms: ["supplier id", "vendor"]
+      - name: vendor_name
+        expr: VENDOR_NAME
+        data_type: varchar
+        synonyms: ["supplier name"]
+      - name: due_date
+        expr: DUE_DATE
+        data_type: date
+        synonyms: ["invoice due date"]
+      - name: days_until_due
+        expr: DAYS_UNTIL_DUE
+        data_type: number
+        synonyms: ["days to due date"]
+      - name: vendor_tier
+        expr: VENDOR_TIER
+        data_type: varchar
+        synonyms: ["supplier tier"]
+      - name: early_pay_priority
+        expr: EARLY_PAY_PRIORITY
+        data_type: varchar
+        synonyms: ["priority", "early payment priority"]
+    measures:
+      - name: invoice_amount
+        expr: INVOICE_AMOUNT_LOCAL
+        default_aggregation: sum
+        data_type: number
+        synonyms: ["invoice amount", "spend"]
+      - name: savings_if_2pct_discount
+        expr: SAVINGS_IF_2PCT_DISCOUNT
+        default_aggregation: sum
+        data_type: number
+        synonyms: ["potential discount", "2 percent savings"]
+
+  - name: payment_timing_recommendation
+    description: "Optimal payment timing strategy for the week. Columns: RECOMMENDATION (PAY_IMMEDIATELY, PAY_THIS_WEEK, EARLY_PAY_OPPORTUNITY, HOLD_FOR_CASH), AMOUNT, INVOICE_COUNT, RATIONALE. Use for 'What is the optimal payment timing strategy for this week?'."
+    base_table:
+      database: ProcureSpendIQ
+      schema: INFORMATION_MART
+      table: payment_timing_recommendation_vw
+    primary_key:
+      columns:
+        - recommendation
+    dimensions:
+      - name: recommendation
+        expr: RECOMMENDATION
+        data_type: varchar
+        synonyms: ["action", "payment strategy recommendation"]
+      - name: rationale
+        expr: RATIONALE
+        data_type: varchar
+        synonyms: ["reason", "justification"]
+    measures:
+      - name: amount
+        expr: AMOUNT
+        default_aggregation: sum
+        data_type: number
+        synonyms: ["total amount", "obligation amount"]
+      - name: invoice_count
+        expr: INVOICE_COUNT
+        default_aggregation: sum
+        data_type: number
+        synonyms: ["number of invoices"]
+
+relationships:
+  - name: invoices_to_vendor
+    left_table: fact_invoices
+    right_table: dim_vendor
+    relationship_columns:
+      - left_column: vendor_id
+        right_column: vendor_id
+    join_type: left_outer
+    relationship_type: many_to_one
+  - name: invoices_to_company
+    left_table: fact_invoices
+    right_table: dim_company_code
+    relationship_columns:
+      - left_column: company_code
+        right_column: company_code
+    join_type: left_outer
+    relationship_type: many_to_one
+  - name: invoices_to_po
+    left_table: fact_invoices
+    right_table: dim_po
+    relationship_columns:
+      - left_column: purchase_order
+        right_column: purchase_order_number
+    join_type: left_outer
+    relationship_type: many_to_one
+
+verified_queries:
+  - name: spend_this_month_vs_last
+    question: "Is our procurement spend higher this month? If yes or no what are the reasons?"
+    use_as_onboarding_question: true
+    sql: |
+      WITH base AS (
+        SELECT * FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED') AND POSTING_DATE IS NOT NULL
+      ),
+      this_month AS (
+        SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend, COUNT(*) AS invoice_cnt
+        FROM base WHERE DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, GETDATE())
+      ),
+      last_month AS (
+        SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend, COUNT(*) AS invoice_cnt
+        FROM base WHERE DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE()))
+      ),
+      summary AS (
+        SELECT 'SUMMARY' AS ROW_TYPE, 'Total' AS DRIVER,
+          (SELECT spend FROM this_month) AS THIS_MONTH_SPEND,
+          (SELECT spend FROM last_month) AS LAST_MONTH_SPEND,
+          CASE WHEN (SELECT spend FROM last_month) > 0
+            THEN ROUND(((SELECT spend FROM this_month) - (SELECT spend FROM last_month)) * 100.0 / (SELECT spend FROM last_month), 1)
+            ELSE NULL END AS CHANGE_PCT,
+          (SELECT invoice_cnt FROM this_month) AS THIS_MONTH_CNT,
+          (SELECT invoice_cnt FROM last_month) AS LAST_MONTH_CNT,
+          1 AS sort_order
+      ),
+      by_vendor AS (
+        SELECT 'VENDOR' AS ROW_TYPE, CAST(VENDOR_ID AS VARCHAR(50)) AS DRIVER,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_MONTH_SPEND,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_MONTH_SPEND,
+          NULL AS CHANGE_PCT, NULL AS THIS_MONTH_CNT, NULL AS LAST_MONTH_CNT,
+          2 AS sort_order
+        FROM base
+        WHERE DATETRUNC(MONTH, POSTING_DATE) IN (DATETRUNC(MONTH, GETDATE()), DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())))
+        GROUP BY VENDOR_ID
+        HAVING SUM(INVOICE_AMOUNT_LOCAL) > 0
+      ),
+      by_purpose AS (
+        SELECT 'PO_PURPOSE' AS ROW_TYPE, COALESCE(PO_PURPOSE, 'Unknown') AS DRIVER,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_MONTH_SPEND,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_MONTH_SPEND,
+          NULL AS CHANGE_PCT, NULL AS THIS_MONTH_CNT, NULL AS LAST_MONTH_CNT,
+          3 AS sort_order
+        FROM base
+        WHERE DATETRUNC(MONTH, POSTING_DATE) IN (DATETRUNC(MONTH, GETDATE()), DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())))
+        GROUP BY PO_PURPOSE
+        HAVING SUM(INVOICE_AMOUNT_LOCAL) > 0
+      ),
+      combined AS (
+        SELECT ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND, CHANGE_PCT, THIS_MONTH_CNT, LAST_MONTH_CNT, sort_order FROM summary
+        UNION ALL 
+        SELECT ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND, CHANGE_PCT, THIS_MONTH_CNT, LAST_MONTH_CNT, sort_order FROM by_vendor
+        UNION ALL 
+        SELECT ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND, CHANGE_PCT, THIS_MONTH_CNT, LAST_MONTH_CNT, sort_order FROM by_purpose
+      )
+      SELECT ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND, CHANGE_PCT, THIS_MONTH_CNT, LAST_MONTH_CNT
+      FROM combined
+      ORDER BY sort_order, (THIS_MONTH_SPEND + LAST_MONTH_SPEND) DESC;
+  - name: why_spend_higher_this_month
+    question: "Why is our procurement spend higher this month?"
+    sql: |
+      WITH base AS (
+        SELECT * FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED') AND POSTING_DATE IS NOT NULL
+      ),
+      drivers AS (
+        SELECT 'VENDOR' AS ROW_TYPE, CAST(VENDOR_ID AS VARCHAR(50)) AS DRIVER,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_MONTH_SPEND,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_MONTH_SPEND,
+          1 AS sort_order
+        FROM base WHERE DATETRUNC(MONTH, POSTING_DATE) IN (DATETRUNC(MONTH, GETDATE()), DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())))
+        GROUP BY VENDOR_ID
+        HAVING SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END)
+             > SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END)
+      ),
+      by_purpose AS (
+        SELECT 'PO_PURPOSE' AS ROW_TYPE, COALESCE(PO_PURPOSE, 'Unknown') AS DRIVER,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_MONTH_SPEND,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_MONTH_SPEND,
+          2 AS sort_order
+        FROM base WHERE DATETRUNC(MONTH, POSTING_DATE) IN (DATETRUNC(MONTH, GETDATE()), DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())))
+        GROUP BY PO_PURPOSE
+        HAVING SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END)
+             > SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END)
+      ),
+      by_status AS (
+        SELECT 'INVOICE_STATUS' AS ROW_TYPE, INVOICE_STATUS AS DRIVER,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_MONTH_SPEND,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_MONTH_SPEND,
+          3 AS sort_order
+        FROM base WHERE DATETRUNC(MONTH, POSTING_DATE) IN (DATETRUNC(MONTH, GETDATE()), DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())))
+        GROUP BY INVOICE_STATUS
+        HAVING SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END)
+             > SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END)
+      ),
+      combined AS (
+        SELECT ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND, sort_order FROM drivers
+        UNION ALL 
+        SELECT ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND, sort_order FROM by_purpose
+        UNION ALL 
+        SELECT ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND, sort_order FROM by_status
+      )
+      SELECT ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND
+      FROM combined
+      ORDER BY sort_order, (THIS_MONTH_SPEND - LAST_MONTH_SPEND) DESC;
+
+  - name: why_spend_higher_lower_this_month
+    question: "Why is our procurement spend higher or lower this month?"
+    sql: |
+      WITH base AS (
+        SELECT * FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED') AND POSTING_DATE IS NOT NULL
+      ),
+      this_month AS (
+        SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend, COUNT(*) AS invoice_cnt
+        FROM base WHERE DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, GETDATE())
+      ),
+      last_month AS (
+        SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend, COUNT(*) AS invoice_cnt
+        FROM base WHERE DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE()))
+      ),
+      summary AS (
+        SELECT 'SUMMARY' AS ROW_TYPE, 'Total' AS DRIVER,
+          (SELECT spend FROM this_month) AS THIS_MONTH_SPEND,
+          (SELECT spend FROM last_month) AS LAST_MONTH_SPEND,
+          CASE WHEN (SELECT spend FROM last_month) > 0
+            THEN ROUND(((SELECT spend FROM this_month) - (SELECT spend FROM last_month)) * 100.0 / (SELECT spend FROM last_month), 1)
+            ELSE NULL END AS CHANGE_PCT,
+          (SELECT invoice_cnt FROM this_month) AS THIS_MONTH_CNT,
+          (SELECT invoice_cnt FROM last_month) AS LAST_MONTH_CNT,
+          1 AS sort_order
+      ),
+      by_vendor AS (
+        SELECT 'VENDOR' AS ROW_TYPE, CAST(VENDOR_ID AS VARCHAR(50)) AS DRIVER,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_MONTH_SPEND,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_MONTH_SPEND,
+          NULL AS CHANGE_PCT, NULL AS THIS_MONTH_CNT, NULL AS LAST_MONTH_CNT,
+          2 AS sort_order
+        FROM base
+        WHERE DATETRUNC(MONTH, POSTING_DATE) IN (DATETRUNC(MONTH, GETDATE()), DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())))
+        GROUP BY VENDOR_ID
+        HAVING SUM(INVOICE_AMOUNT_LOCAL) > 0
+      ),
+      by_purpose AS (
+        SELECT 'PO_PURPOSE' AS ROW_TYPE, COALESCE(PO_PURPOSE, 'Unknown') AS DRIVER,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_MONTH_SPEND,
+          SUM(CASE WHEN DATETRUNC(MONTH, POSTING_DATE) = DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_MONTH_SPEND,
+          NULL AS CHANGE_PCT, NULL AS THIS_MONTH_CNT, NULL AS LAST_MONTH_CNT,
+          3 AS sort_order
+        FROM base
+        WHERE DATETRUNC(MONTH, POSTING_DATE) IN (DATETRUNC(MONTH, GETDATE()), DATETRUNC(MONTH, DATEADD(MONTH, -1, GETDATE())))
+        GROUP BY PO_PURPOSE
+        HAVING SUM(INVOICE_AMOUNT_LOCAL) > 0
+      ),
+      combined AS (
+        SELECT ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND, CHANGE_PCT, THIS_MONTH_CNT, LAST_MONTH_CNT, sort_order FROM summary
+        UNION ALL 
+        SELECT ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND, CHANGE_PCT, THIS_MONTH_CNT, LAST_MONTH_CNT, sort_order FROM by_vendor
+        UNION ALL 
+        SELECT ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND, CHANGE_PCT, THIS_MONTH_CNT, LAST_MONTH_CNT, sort_order FROM by_purpose
+      )
+      SELECT ROW_TYPE, DRIVER, THIS_MONTH_SPEND, LAST_MONTH_SPEND, CHANGE_PCT, THIS_MONTH_CNT, LAST_MONTH_CNT
+      FROM combined
+      ORDER BY sort_order, (THIS_MONTH_SPEND + LAST_MONTH_SPEND) DESC;
+
+  - name: spend_this_quarter_vs_last
+    question: "Is our procurement spend higher this quarter than last quarter? If yes or no what are the reasons?"
+    sql: |
+     WITH base AS (
+        SELECT * FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED') AND POSTING_DATE IS NOT NULL
+      ),
+      this_q AS (SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend FROM base WHERE DATETRUNC(QUARTER, POSTING_DATE) = DATETRUNC(QUARTER, GETDATE())),
+      last_q AS (SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend FROM base WHERE DATETRUNC(QUARTER, POSTING_DATE) = DATETRUNC(QUARTER, DATEADD(QUARTER, -1, GETDATE()))),
+      summary AS (
+        SELECT 'SUMMARY' AS ROW_TYPE, 'Total' AS DRIVER,
+          (SELECT spend FROM this_q) AS THIS_QUARTER_SPEND,
+          (SELECT spend FROM last_q) AS LAST_QUARTER_SPEND,
+          CASE WHEN (SELECT spend FROM last_q) > 0 THEN ROUND(((SELECT spend FROM this_q) - (SELECT spend FROM last_q)) * 100.0 / (SELECT spend FROM last_q), 1) ELSE NULL END AS CHANGE_PCT,
+          1 AS sort_order
+      ),
+      by_vendor AS (
+        SELECT 'VENDOR' AS ROW_TYPE, CAST(VENDOR_ID AS VARCHAR(50)) AS DRIVER,
+          SUM(CASE WHEN DATETRUNC(QUARTER, POSTING_DATE) = DATETRUNC(QUARTER, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_QUARTER_SPEND,
+          SUM(CASE WHEN DATETRUNC(QUARTER, POSTING_DATE) = DATETRUNC(QUARTER, DATEADD(QUARTER, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_QUARTER_SPEND, 
+          NULL AS CHANGE_PCT,
+          2 AS sort_order
+        FROM base WHERE DATETRUNC(QUARTER, POSTING_DATE) IN (DATETRUNC(QUARTER, GETDATE()), DATETRUNC(QUARTER, DATEADD(QUARTER, -1, GETDATE())))
+        GROUP BY VENDOR_ID 
+        HAVING SUM(INVOICE_AMOUNT_LOCAL) > 0
+      ),
+      by_purpose AS (
+        SELECT 'PO_PURPOSE' AS ROW_TYPE, COALESCE(PO_PURPOSE, 'Unknown') AS DRIVER,
+          SUM(CASE WHEN DATETRUNC(QUARTER, POSTING_DATE) = DATETRUNC(QUARTER, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_QUARTER_SPEND,
+          SUM(CASE WHEN DATETRUNC(QUARTER, POSTING_DATE) = DATETRUNC(QUARTER, DATEADD(QUARTER, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_QUARTER_SPEND, 
+          NULL AS CHANGE_PCT,
+          3 AS sort_order
+        FROM base WHERE DATETRUNC(QUARTER, POSTING_DATE) IN (DATETRUNC(QUARTER, GETDATE()), DATETRUNC(QUARTER, DATEADD(QUARTER, -1, GETDATE())))
+        GROUP BY PO_PURPOSE 
+        HAVING SUM(INVOICE_AMOUNT_LOCAL) > 0
+      ),
+      combined AS (
+        SELECT ROW_TYPE, DRIVER, THIS_QUARTER_SPEND, LAST_QUARTER_SPEND, CHANGE_PCT, sort_order FROM summary
+        UNION ALL 
+        SELECT ROW_TYPE, DRIVER, THIS_QUARTER_SPEND, LAST_QUARTER_SPEND, CHANGE_PCT, sort_order FROM by_vendor
+        UNION ALL 
+        SELECT ROW_TYPE, DRIVER, THIS_QUARTER_SPEND, LAST_QUARTER_SPEND, CHANGE_PCT, sort_order FROM by_purpose
+      )
+      SELECT ROW_TYPE, DRIVER, THIS_QUARTER_SPEND, LAST_QUARTER_SPEND, CHANGE_PCT
+      FROM combined
+      ORDER BY sort_order, (THIS_QUARTER_SPEND + LAST_QUARTER_SPEND) DESC;
+
+  - name: why_spend_higher_lower_this_quarter
+    question: "Why is our procurement spend higher or lower this quarter?"
+    sql: |
+     WITH base AS (
+        SELECT * FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw 
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED') AND POSTING_DATE IS NOT NULL
+      ),
+      this_q AS (
+        SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend 
+        FROM base 
+        WHERE DATETRUNC(QUARTER, POSTING_DATE) = DATETRUNC(QUARTER, GETDATE())
+      ),
+      last_q AS (
+        SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend 
+        FROM base 
+        WHERE DATETRUNC(QUARTER, POSTING_DATE) = DATETRUNC(QUARTER, DATEADD(QUARTER, -1, GETDATE()))
+      ),
+      summary AS (
+        SELECT 'SUMMARY' AS ROW_TYPE, 'Total' AS DRIVER, 
+          (SELECT spend FROM this_q) AS THIS_QUARTER_SPEND, 
+          (SELECT spend FROM last_q) AS LAST_QUARTER_SPEND, 
+          CASE WHEN (SELECT spend FROM last_q) > 0 
+            THEN ROUND(((SELECT spend FROM this_q) - (SELECT spend FROM last_q)) * 100.0 / (SELECT spend FROM last_q), 1) 
+            ELSE NULL 
+          END AS CHANGE_PCT,
+          1 AS sort_order
+      ),
+      by_vendor AS (
+        SELECT 'VENDOR' AS ROW_TYPE, CAST(VENDOR_ID AS VARCHAR(50)) AS DRIVER, 
+          SUM(CASE WHEN DATETRUNC(QUARTER, POSTING_DATE) = DATETRUNC(QUARTER, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_QUARTER_SPEND, 
+          SUM(CASE WHEN DATETRUNC(QUARTER, POSTING_DATE) = DATETRUNC(QUARTER, DATEADD(QUARTER, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_QUARTER_SPEND, 
+          NULL AS CHANGE_PCT,
+          2 AS sort_order
+        FROM base 
+        WHERE DATETRUNC(QUARTER, POSTING_DATE) IN (DATETRUNC(QUARTER, GETDATE()), DATETRUNC(QUARTER, DATEADD(QUARTER, -1, GETDATE()))) 
+        GROUP BY VENDOR_ID 
+        HAVING SUM(INVOICE_AMOUNT_LOCAL) > 0
+      ),
+      by_purpose AS (
+        SELECT 'PO_PURPOSE' AS ROW_TYPE, COALESCE(PO_PURPOSE, 'Unknown') AS DRIVER, 
+          SUM(CASE WHEN DATETRUNC(QUARTER, POSTING_DATE) = DATETRUNC(QUARTER, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_QUARTER_SPEND, 
+          SUM(CASE WHEN DATETRUNC(QUARTER, POSTING_DATE) = DATETRUNC(QUARTER, DATEADD(QUARTER, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_QUARTER_SPEND, 
+          NULL AS CHANGE_PCT,
+          3 AS sort_order
+        FROM base 
+        WHERE DATETRUNC(QUARTER, POSTING_DATE) IN (DATETRUNC(QUARTER, GETDATE()), DATETRUNC(QUARTER, DATEADD(QUARTER, -1, GETDATE()))) 
+        GROUP BY PO_PURPOSE 
+        HAVING SUM(INVOICE_AMOUNT_LOCAL) > 0
+      ),
+      combined AS (
+        SELECT ROW_TYPE, DRIVER, THIS_QUARTER_SPEND, LAST_QUARTER_SPEND, CHANGE_PCT, sort_order FROM summary
+        UNION ALL 
+        SELECT ROW_TYPE, DRIVER, THIS_QUARTER_SPEND, LAST_QUARTER_SPEND, CHANGE_PCT, sort_order FROM by_vendor
+        UNION ALL 
+        SELECT ROW_TYPE, DRIVER, THIS_QUARTER_SPEND, LAST_QUARTER_SPEND, CHANGE_PCT, sort_order FROM by_purpose
+      )
+      SELECT ROW_TYPE, DRIVER, THIS_QUARTER_SPEND, LAST_QUARTER_SPEND, CHANGE_PCT
+      FROM combined
+      ORDER BY sort_order, (THIS_QUARTER_SPEND + LAST_QUARTER_SPEND) DESC;
+
+  - name: spend_this_year_vs_last
+    question: "Is our procurement spend higher this year than last year? If yes or no what are the reasons?"
+    sql: |
+         WITH base AS (
+         SELECT * FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+         WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED') 
+         AND POSTING_DATE IS NOT NULL
+         ),
+          this_y AS (
+            SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend FROM base 
+            WHERE DATETRUNC(YEAR, POSTING_DATE) = DATETRUNC(YEAR, GETDATE())
+            ),
+          last_y AS (
+              SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend FROM base 
+              WHERE DATETRUNC(YEAR, POSTING_DATE) = DATETRUNC(YEAR, DATEADD(YEAR, -1, GETDATE()))
+          ),
+            summary AS (
+                SELECT 'SUMMARY' AS ROW_TYPE, 'Total' AS DRIVER,
+                    (SELECT spend FROM this_y) AS THIS_YEAR_SPEND,
+                    (SELECT spend FROM last_y) AS LAST_YEAR_SPEND,
+                    CASE WHEN (SELECT spend FROM last_y) > 0 
+                        THEN ROUND(((SELECT spend FROM this_y) - (SELECT spend FROM last_y)) * 100.0 
+                            / (SELECT spend FROM last_y), 1) 
+                        ELSE NULL END AS CHANGE_PCT,
+                    1 AS sort_order
+            ),
+            by_vendor AS (
+                SELECT 'VENDOR' AS ROW_TYPE, CAST(VENDOR_ID AS VARCHAR(50)) AS DRIVER,
+                    SUM(CASE WHEN DATETRUNC(YEAR, POSTING_DATE) = DATETRUNC(YEAR, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_YEAR_SPEND,
+                    SUM(CASE WHEN DATETRUNC(YEAR, POSTING_DATE) = DATETRUNC(YEAR, DATEADD(YEAR, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_YEAR_SPEND,
+                    NULL AS CHANGE_PCT,
+                    2 AS sort_order
+                FROM base
+                WHERE DATETRUNC(YEAR, POSTING_DATE) IN (DATETRUNC(YEAR, GETDATE()), DATETRUNC(YEAR, DATEADD(YEAR, -1, GETDATE())))
+                GROUP BY VENDOR_ID
+                HAVING SUM(INVOICE_AMOUNT_LOCAL) > 0
+            ),
+          by_purpose AS (
+              SELECT 'PO_PURPOSE' AS ROW_TYPE, COALESCE(PO_PURPOSE, 'Unknown') AS DRIVER,
+                  SUM(CASE WHEN DATETRUNC(YEAR, POSTING_DATE) = DATETRUNC(YEAR, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_YEAR_SPEND,
+                  SUM(CASE WHEN DATETRUNC(YEAR, POSTING_DATE) = DATETRUNC(YEAR, DATEADD(YEAR, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_YEAR_SPEND,
+                  NULL AS CHANGE_PCT,
+                  3 AS sort_order
+              FROM base
+              WHERE DATETRUNC(YEAR, POSTING_DATE) IN (DATETRUNC(YEAR, GETDATE()), DATETRUNC(YEAR, DATEADD(YEAR, -1, GETDATE())))
+              GROUP BY PO_PURPOSE
+              HAVING SUM(INVOICE_AMOUNT_LOCAL) > 0
+          )
+          SELECT ROW_TYPE, DRIVER, THIS_YEAR_SPEND, LAST_YEAR_SPEND, CHANGE_PCT
+          FROM (
+              SELECT * FROM summary
+              UNION ALL SELECT * FROM by_vendor
+              UNION ALL SELECT * FROM by_purpose
+          ) AS combined
+          ORDER BY sort_order, (THIS_YEAR_SPEND + LAST_YEAR_SPEND) DESC;
+                
+
+  - name: why_spend_higher_lower_this_year
+    question: "Why is our procurement spend higher or lower this year?"
+    sql: |
+                        WITH base AS (
+                        SELECT * FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+                        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED') 
+                        AND POSTING_DATE IS NOT NULL
+                        ),
+                        this_y AS (
+                        SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend FROM base 
+                        WHERE DATETRUNC(YEAR, POSTING_DATE) = DATETRUNC(YEAR, GETDATE())
+                        ),
+                        last_y AS (
+                        SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend FROM base 
+                            WHERE DATETRUNC(YEAR, POSTING_DATE) = DATETRUNC(YEAR, DATEADD(YEAR, -1, GETDATE()))
+                        ),
+                        summary AS (
+                            SELECT 'SUMMARY' AS ROW_TYPE, 'Total' AS DRIVER,
+                                (SELECT spend FROM this_y) AS THIS_YEAR_SPEND,
+                                (SELECT spend FROM last_y) AS LAST_YEAR_SPEND,
+                                CASE WHEN (SELECT spend FROM last_y) > 0 
+                                    THEN ROUND(((SELECT spend FROM this_y) - (SELECT spend FROM last_y)) * 100.0 
+                                        / (SELECT spend FROM last_y), 1) 
+                                    ELSE NULL END AS CHANGE_PCT,
+                                1 AS sort_order
+                        ),
+                        by_vendor AS (
+                            SELECT 'VENDOR' AS ROW_TYPE, CAST(VENDOR_ID AS VARCHAR(50)) AS DRIVER,
+                                SUM(CASE WHEN DATETRUNC(YEAR, POSTING_DATE) = DATETRUNC(YEAR, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_YEAR_SPEND,
+                                SUM(CASE WHEN DATETRUNC(YEAR, POSTING_DATE) = DATETRUNC(YEAR, DATEADD(YEAR, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_YEAR_SPEND,
+                                NULL AS CHANGE_PCT,
+                                2 AS sort_order
+                            FROM base
+                            WHERE DATETRUNC(YEAR, POSTING_DATE) IN (DATETRUNC(YEAR, GETDATE()), DATETRUNC(YEAR, DATEADD(YEAR, -1, GETDATE())))
+                            GROUP BY VENDOR_ID
+                            HAVING SUM(INVOICE_AMOUNT_LOCAL) > 0
+                        ),
+                        by_purpose AS (
+                            SELECT 'PO_PURPOSE' AS ROW_TYPE, COALESCE(PO_PURPOSE, 'Unknown') AS DRIVER,
+                                SUM(CASE WHEN DATETRUNC(YEAR, POSTING_DATE) = DATETRUNC(YEAR, GETDATE()) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS THIS_YEAR_SPEND,
+                                SUM(CASE WHEN DATETRUNC(YEAR, POSTING_DATE) = DATETRUNC(YEAR, DATEADD(YEAR, -1, GETDATE())) THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS LAST_YEAR_SPEND,
+                                NULL AS CHANGE_PCT,
+                                3 AS sort_order
+                            FROM base
+                            WHERE DATETRUNC(YEAR, POSTING_DATE) IN (DATETRUNC(YEAR, GETDATE()), DATETRUNC(YEAR, DATEADD(YEAR, -1, GETDATE())))
+                            GROUP BY PO_PURPOSE
+                            HAVING SUM(INVOICE_AMOUNT_LOCAL) > 0
+                        )
+                        SELECT ROW_TYPE, DRIVER, THIS_YEAR_SPEND, LAST_YEAR_SPEND, CHANGE_PCT
+                        FROM (
+                            SELECT * FROM summary
+                            UNION ALL SELECT * FROM by_vendor
+                            UNION ALL SELECT * FROM by_purpose
+                        ) AS combined
+                        ORDER BY sort_order, (THIS_YEAR_SPEND + LAST_YEAR_SPEND) DESC;
+  - name: cost_reduction_opportunities
+    question: "Suggest ways to reduce procurement costs based on our spend data"
+    use_as_onboarding_question: true
+    sql: |
+                                                    WITH base AS (
+                                                    SELECT * FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+                                                    WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+                                                    ),
+                                                    tot_spend AS (SELECT COALESCE(SUM(INVOICE_AMOUNT_LOCAL), 1) AS s FROM base),
+                                                    tot_cnt AS (SELECT COUNT(*) AS c FROM base),
+                                                    top5_vendors AS (
+                                                    SELECT SUM(INVOICE_AMOUNT_LOCAL) AS spend, ROW_NUMBER() OVER (ORDER BY SUM(INVOICE_AMOUNT_LOCAL) DESC) AS rn
+                                                    FROM base 
+                                                    GROUP BY VENDOR_ID
+                                                    ),
+                                                    vendor_consolidation AS (
+                                                    SELECT '1_Vendor_Consolidation' AS OPPORTUNITY_AREA,
+                                                      ROUND(SUM(spend) * 100.0 / (SELECT s FROM tot_spend), 1) AS PCT_OF_SPEND,
+                                                      ROUND(SUM(spend), 2) AS AMOUNT,
+                                                      'Top 5 vendors by spend - negotiate volume discounts' AS FINDING,
+                                                      'Consolidate vendors; negotiate volume discounts with top spenders' AS RECOMMENDED_ACTION,
+                                                      1 AS sort_order
+                                                    FROM top5_vendors
+                                                    WHERE rn <= 5
+                                                    ),
+                                                    disputed AS (
+                                                    SELECT '2_Disputed_Invoices' AS OPPORTUNITY_AREA,
+                                                      ROUND(COUNT(*) * 100.0 / NULLIF((SELECT c FROM tot_cnt), 0), 1) AS PCT_OF_SPEND,
+                                                      ROUND(COALESCE(SUM(INVOICE_AMOUNT_LOCAL), 0), 2) AS AMOUNT,
+                                                      CONCAT(COALESCE(COUNT(*), 0), ' disputed invoices - $', ROUND(COALESCE(SUM(INVOICE_AMOUNT_LOCAL), 0), 0)) AS FINDING,
+                                                      'Resolve disputes within 30 days; escalate pricing variances to avoid aging' AS RECOMMENDED_ACTION,
+                                                      2 AS sort_order
+                                                    FROM base WHERE INVOICE_STATUS = 'Disputed'
+                                                    ),
+                                                    overdue AS (
+                                                    SELECT '3_Overdue_Invoices' AS OPPORTUNITY_AREA,
+                                                      ROUND(COUNT(*) * 100.0 / NULLIF((SELECT COUNT(*) FROM base WHERE INVOICE_STATUS IN ('Open','Due','Overdue','Disputed')), 0), 1) AS PCT_OF_SPEND,
+                                                      ROUND(COALESCE(SUM(INVOICE_AMOUNT_LOCAL), 0), 2) AS AMOUNT,
+                                                      CONCAT(COALESCE(COUNT(*), 0), ' overdue, avg ', ROUND(COALESCE(AVG(AGING_DAYS), 0), 0), ' days') AS FINDING,
+                                                      'Prioritize by amount; contact vendors to avoid late fees and penalties' AS RECOMMENDED_ACTION,
+                                                      3 AS sort_order
+                                                    FROM base WHERE INVOICE_STATUS = 'Overdue'
+                                                    ),
+                                                    late_pmt_data AS (
+                                                    SELECT TOP 1 *
+                                                    FROM ProcureSpendIQ.INFORMATION_MART.late_payment_amount_vw
+                                                    ORDER BY YEAR DESC, MONTH DESC
+                                                    ),
+                                                    late_pmt AS (
+                                                    SELECT '4_Late_Payment_Cost' AS OPPORTUNITY_AREA,
+                                                      COALESCE(LATE_PAYMENT_RATE_PCT, 0) AS PCT_OF_SPEND,
+                                                      COALESCE(LATE_PAYMENT_AMOUNT, 0) AS AMOUNT,
+                                                      CONCAT(COALESCE(LATE_PAYMENT_COUNT, 0), ' late payments') AS FINDING,
+                                                      'Improve cycle time; automate approvals; capture early payment discounts' AS RECOMMENDED_ACTION,
+                                                      4 AS sort_order
+                                                    FROM late_pmt_data
+                                                    ),
+                                                    early_benefit AS (
+                                                    SELECT '5_Early_Payment_Discount' AS OPPORTUNITY_AREA,
+                                                      COALESCE(NEPBI_PERCENT, 0) AS PCT_OF_SPEND,
+                                                      COALESCE(TOTAL_NET_BENEFIT, 0) AS AMOUNT,
+                                                      CONCAT('Current benefit: ', ROUND(COALESCE(NEPBI_PERCENT, 0), 2), '% of spend') AS FINDING,
+                                                      'Increase early payments to capture more discount; target NEPBI > 2%' AS RECOMMENDED_ACTION,
+                                                      5 AS sort_order
+                                                    FROM ProcureSpendIQ.INFORMATION_MART.net_early_payment_benefit_index_vw
+                                                      ),
+                                                     dup_pmt AS (
+                                                    SELECT '6_Duplicate_Payments' AS OPPORTUNITY_AREA,
+                                                      ROUND(COALESCE(AVG(DUPLICATE_PAYMENT_RATE), 0), 1) AS PCT_OF_SPEND,
+                                                      ROUND(COALESCE(SUM(DUPLICATE_PAYMENT_AMOUNT), 0), 2) AS AMOUNT,
+                                                      CONCAT(COALESCE(COUNT(*), 0), ' invoices with potential duplicates') AS FINDING,
+                                                      'Implement duplicate check before payment; reconcile regularly' AS RECOMMENDED_ACTION,
+                                                      6 AS sort_order
+                                                    FROM ProcureSpendIQ.INFORMATION_MART.duplicate_payments_for_invoice_vw 
+                                                    WHERE DUPLICATE_PAYMENT_AMOUNT > 0
+                                                    ),
+                                                    grir_data AS (
+                                                    SELECT TOP 1 *
+                                                    FROM ProcureSpendIQ.INFORMATION_MART.gr_ir_outstanding_balance_vw
+                                                    ORDER BY YEAR DESC, MONTH DESC
+                                                    ),
+                                                    grir AS (
+                                                    SELECT '7_GRIR_Clearing' AS OPPORTUNITY_AREA,
+                                                      NULL AS PCT_OF_SPEND,
+                                                      COALESCE(TOTAL_GRIR_BLNC, 0) AS AMOUNT,
+                                                      CONCAT(COALESCE(INVOICE_COUNT, 0), ' items in GR/IR') AS FINDING,
+                                                      'Clear GR/IR items; match receipts to invoices to reduce working capital' AS RECOMMENDED_ACTION,
+                                                      7 AS sort_order
+                                                    FROM grir_data
+                                                    ),
+                                                    spend_cat AS (
+                                                    SELECT '8_Spend_By_Category' AS OPPORTUNITY_AREA,
+                                                      ROUND(SUM(INVOICE_AMOUNT_LOCAL) * 100.0 / (SELECT s FROM tot_spend), 1) AS PCT_OF_SPEND,
+                                                      ROUND(SUM(INVOICE_AMOUNT_LOCAL), 2) AS AMOUNT,
+                                                      CONCAT(COALESCE(PO_PURPOSE, 'Unknown'), ': ', COUNT(*), ' invoices') AS FINDING,
+                                                      'Review category contracts; consolidate Services/Goods where possible' AS RECOMMENDED_ACTION,
+                                                      8 AS sort_order
+                                                    FROM base WHERE PO_PURPOSE IS NOT NULL
+                                                    GROUP BY PO_PURPOSE
+                                                      ),
+                                                    combined AS (
+                                                      SELECT OPPORTUNITY_AREA, PCT_OF_SPEND, AMOUNT, FINDING, RECOMMENDED_ACTION, sort_order FROM vendor_consolidation
+                                                      UNION ALL SELECT OPPORTUNITY_AREA, PCT_OF_SPEND, AMOUNT, FINDING, RECOMMENDED_ACTION, sort_order FROM disputed
+                                                      UNION ALL SELECT OPPORTUNITY_AREA, PCT_OF_SPEND, AMOUNT, FINDING, RECOMMENDED_ACTION, sort_order FROM overdue
+                                                      UNION ALL SELECT OPPORTUNITY_AREA, PCT_OF_SPEND, AMOUNT, FINDING, RECOMMENDED_ACTION, sort_order FROM late_pmt
+                                                      UNION ALL SELECT OPPORTUNITY_AREA, PCT_OF_SPEND, AMOUNT, FINDING, RECOMMENDED_ACTION, sort_order FROM early_benefit
+                                                      UNION ALL SELECT OPPORTUNITY_AREA, PCT_OF_SPEND, AMOUNT, FINDING, RECOMMENDED_ACTION, sort_order FROM dup_pmt
+                                                      UNION ALL SELECT OPPORTUNITY_AREA, PCT_OF_SPEND, AMOUNT, FINDING, RECOMMENDED_ACTION, sort_order FROM grir
+                                                      UNION ALL SELECT OPPORTUNITY_AREA, PCT_OF_SPEND, AMOUNT, FINDING, RECOMMENDED_ACTION, sort_order FROM spend_cat
+                                                    )
+                                                      SELECT OPPORTUNITY_AREA, PCT_OF_SPEND, AMOUNT, FINDING, RECOMMENDED_ACTION
+                                                      FROM combined
+                                                      ORDER BY sort_order, AMOUNT DESC;
+  - name: spending_overview
+    question: "Show me total spend YTD, monthly trends, and top 5 vendors"
+    use_as_onboarding_question: true
+    sql: |
+      WITH base AS (
+        SELECT * FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+      ),
+      total_spend_ytd AS (
+        SELECT SUM(INVOICE_AMOUNT_LOCAL) AS value_num 
+        FROM base 
+        WHERE POSTING_DATE <= GETDATE()
+      ),
+      monthly_trend AS (
+        SELECT FORMAT(POSTING_DATE, 'yyyy-MM') AS month, SUM(INVOICE_AMOUNT_LOCAL) AS value_num 
+        FROM base 
+        GROUP BY FORMAT(POSTING_DATE, 'yyyy-MM')
+      ),
+      monthly_trend_ranked AS (
+        SELECT month, value_num, 
+               ROW_NUMBER() OVER (ORDER BY month DESC) AS rn
+        FROM monthly_trend
+      ),
+      curr_month AS (
+        SELECT value_num 
+        FROM monthly_trend_ranked 
+        WHERE rn = 1
+      ),
+      prev_month AS (
+        SELECT value_num 
+        FROM monthly_trend_ranked 
+        WHERE rn = 2
+      ),
+      mom_change AS (
+        SELECT CASE WHEN prev.value_num = 0 OR prev.value_num IS NULL THEN NULL
+          ELSE (curr.value_num - prev.value_num) / prev.value_num * 100 END AS value_num
+        FROM curr_month curr
+        CROSS JOIN prev_month prev
+      ),
+      vendor_spend AS (
+        SELECT VENDOR_ID, SUM(INVOICE_AMOUNT_LOCAL) AS spend 
+        FROM base 
+        GROUP BY VENDOR_ID
+      ),
+      total_spend AS (
+        SELECT SUM(spend) AS tot 
+        FROM vendor_spend
+      ),
+      vendor_spend_ranked AS (
+        SELECT spend, ROW_NUMBER() OVER (ORDER BY spend DESC) AS rn
+        FROM vendor_spend
+      ),
+      top5 AS (
+        SELECT spend 
+        FROM vendor_spend_ranked 
+        WHERE rn <= 5
+      ),
+      top5_share AS (
+        SELECT ROUND(SUM(spend) / (SELECT tot FROM total_spend) * 100, 2) AS value_num 
+        FROM top5
+      ),
+      combined AS (
+        SELECT 'TOTAL_SPEND_YTD' AS metric, (SELECT value_num FROM total_spend_ytd) AS value_num, 1 AS sort_order
+        UNION ALL 
+        SELECT 'MOM_CHANGE_PCT', (SELECT value_num FROM mom_change), 2 AS sort_order
+        UNION ALL 
+        SELECT 'TOP5_VENDORS_SHARE_PCT', (SELECT value_num FROM top5_share), 3 AS sort_order
+      )
+      SELECT metric, value_num
+      FROM combined
+      ORDER BY sort_order;
+  - name: vendor_analysis
+    question: "Analyze vendor concentration and dependency"
+    use_as_onboarding_question: true
+    sql: |
+      SELECT F.VENDOR_ID, COALESCE(V.VENDOR_NAME, 'Unknown') AS VENDOR_NAME,
+        COUNT(DISTINCT F.DOCUMENT_NUMBER) AS INVOICE_COUNT, SUM(F.INVOICE_AMOUNT_LOCAL) AS TOTAL_SPEND,
+        ROUND(SUM(F.INVOICE_AMOUNT_LOCAL) * 100.0 / NULLIF(SUM(SUM(F.INVOICE_AMOUNT_LOCAL)) OVER (), 0), 2) AS SPEND_SHARE_PCT
+      FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw F
+      LEFT JOIN ProcureSpendIQ.INFORMATION_MART.dim_vendor_vw V ON F.VENDOR_ID = V.VENDOR_ID
+      WHERE UPPER(F.INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+      GROUP BY F.VENDOR_ID, V.VENDOR_NAME ORDER BY TOTAL_SPEND DESC;
+
+  - name: payment_performance
+    question: "Show payment delays and cycle time issues"
+    sql: |
+      SELECT * FROM ProcureSpendIQ.INFORMATION_MART.payment_processing_cycle_time_vw
+      ORDER BY YEAR DESC, MONTH DESC;
+
+  - name: invoice_aging
+    question: "Show overdue invoices by aging buckets"
+    sql: |
+      WITH __fact_invoices AS (
+      SELECT
+        INVOICE_STATUS,
+        POSTING_DATE,
+        INVOICE_AMOUNT_LOCAL AS invoice_amount,
+        AGING_DAYS
+       FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+          ),
+        AgingBuckets AS (
+       SELECT
+        CASE
+            WHEN fi.AGING_DAYS <= 30 THEN '0-30 days'
+            WHEN fi.AGING_DAYS <= 60 THEN '31-60 days'
+            WHEN fi.AGING_DAYS <= 90 THEN '61-90 days'
+            ELSE '90+ days'
+        END AS aging_bucket,
+        CASE
+            WHEN fi.AGING_DAYS <= 30 THEN 1
+            WHEN fi.AGING_DAYS <= 60 THEN 2
+            WHEN fi.AGING_DAYS <= 90 THEN 3
+            ELSE 4
+        END AS sort_order,
+        fi.invoice_amount,
+        fi.POSTING_DATE
+       FROM __fact_invoices AS fi
+       WHERE fi.INVOICE_STATUS = 'Overdue' 
+      AND fi.AGING_DAYS > 0
+       )
+      SELECT
+      aging_bucket,
+      COUNT(*) AS invoice_count,
+      SUM(invoice_amount) AS total_amount,
+      MIN(POSTING_DATE) AS start_date,
+      MAX(POSTING_DATE) AS end_date
+        FROM AgingBuckets
+      GROUP BY aging_bucket, sort_order
+      ORDER BY sort_order;
+  - name: overdue_invoices_detail
+    question: "List overdue invoices with amount and aging"
+    sql: |
+      SELECT TOP 50 DOCUMENT_NUMBER, VENDOR_ID, INVOICE_AMOUNT_LOCAL, AGING_DAYS, DUE_DATE, PURCHASE_ORDER_REFERENCE, PO_PURPOSE
+      FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw 
+      WHERE INVOICE_STATUS = 'Overdue'
+      ORDER BY AGING_DAYS DESC, INVOICE_AMOUNT_LOCAL DESC;
+
+  - name: disputed_invoices
+    question: "Show disputed invoices"
+    sql: |
+            SELECT DOCUMENT_NUMBER, VENDOR_ID, INVOICE_AMOUNT_LOCAL, AGING_DAYS, DUE_DATE, POSTING_DATE, PURCHASE_ORDER_REFERENCE
+            FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw 
+            WHERE INVOICE_STATUS = 'Disputed'
+            ORDER BY INVOICE_AMOUNT_LOCAL
+
+  - name: open_vs_paid_summary
+    question: "Summary of open vs paid invoices by status"
+    sql: |
+        SELECT INVOICE_STATUS, COUNT(*) AS INVOICE_COUNT, SUM(INVOICE_AMOUNT_LOCAL) AS TOTAL_AMOUNT
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED','REJECTED')
+        GROUP BY INVOICE_STATUS ORDER BY TOTAL_AMOUNT DESC;
+
+  - name: spend_by_po_purpose
+    question: "Spend by PO purpose or invoice type"
+    sql: |
+      SELECT COALESCE(PO_PURPOSE,'Unknown') AS PO_PURPOSE, COUNT(*) AS INVOICE_COUNT, SUM(INVOICE_AMOUNT_LOCAL) AS TOTAL_SPEND
+      FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED','REJECTED')
+      GROUP BY PO_PURPOSE ORDER BY TOTAL_SPEND DESC;
+
+  - name: ap_balance_trend
+    question: "AP balance trend by year and month"
+    sql: |
+      SELECT YEAR, MONTH, AP_BALANCE, INVOICE_COUNT FROM ProcureSpendIQ.INFORMATION_MART.accounts_payable_balance_vw
+      ORDER BY YEAR DESC, MONTH DESC;
+
+  - name: days_payable_outstanding
+    question: "Days payable outstanding (DPO)"
+    sql: |
+      SELECT TOP 50 * FROM ProcureSpendIQ.INFORMATION_MART.days_payable_outstanding_vw ORDER BY YEAR DESC, MONTH DESC;
+
+  - name: full_payment_rate
+    question: "Full payment rate percentage"
+    sql: |
+      SELECT TOP 24 * FROM ProcureSpendIQ.INFORMATION_MART.full_payment_rate_vw ORDER BY YEAR DESC, MONTH DESC;
+
+  - name: on_time_payment_rate
+    question: "On-time payment rate"
+    sql: |
+      SELECT TOP 24 * FROM ProcureSpendIQ.INFORMATION_MART.on_time_payment_rate_vw ORDER BY YEAR DESC, MONTH DESC;
+
+  - name: gr_ir_outstanding
+    question: "GR/IR outstanding balance"
+    sql: |
+      SELECT TOP 24 * FROM ProcureSpendIQ.INFORMATION_MART.gr_ir_outstanding_balance_vw ORDER BY YEAR DESC, MONTH DESC;
+
+  - name: gr_ir_hotspots_clearing_plan
+    question: "Show GR/IR outstanding balance by month and highlight which recent months have the highest GR/IR balance so we can prioritize clearing."
+    sql: |
+      SELECT TOP 24
+        YEAR,
+        MONTH,
+        INVOICE_COUNT,
+        TOTAL_GRIR_BLNC
+      FROM ProcureSpendIQ.INFORMATION_MART.gr_ir_outstanding_balance_vw
+      ORDER BY YEAR DESC, MONTH DESC;
+
+  - name: gr_ir_working_capital_release
+    question: "Estimate the working capital that would be released by clearing all GR/IR items older than 60 and 90 days, by month."
+    sql: |
+      SELECT TOP 24
+        YEAR,
+        MONTH,
+        SUM(GRIR_OVER_60) AS GRIR_OVER_60_TOTAL,
+        SUM(GRIR_OVER_90) AS GRIR_OVER_90_TOTAL
+      FROM ProcureSpendIQ.INFORMATION_MART.gr_ir_aging_vw
+      GROUP BY YEAR, MONTH
+      ORDER BY YEAR DESC, MONTH DESC;
+
+  - name: gr_ir_aging_detail
+    question: "Show GR/IR aging by bucket so I can see items older than 30, 60, and 90 days."
+    sql: |
+      SELECT
+        YEAR,
+        MONTH,
+        AGE_DAYS,
+        TOTAL_GRIR_BALANCE,
+        GRIR_OVER_30,
+        GRIR_OVER_60,
+        GRIR_OVER_90
+      FROM ProcureSpendIQ.INFORMATION_MART.gr_ir_aging_vw
+      ORDER BY YEAR DESC, MONTH DESC, AGE_DAYS;
+
+  - name: gr_ir_root_cause_summary
+    question: "Using GR/IR aging and outstanding balance data, explain the likely root-cause buckets (missing goods receipt, invoice not posted, price or quantity mismatch) and for each bucket suggest 2–3 concrete remediation actions."
+    sql: |
+      SELECT
+        YEAR,
+        MONTH,
+        AGE_DAYS,
+        TOTAL_GRIR_BALANCE,
+        GRIR_OVER_30,
+        GRIR_OVER_60,
+        GRIR_OVER_90
+      FROM ProcureSpendIQ.INFORMATION_MART.gr_ir_aging_vw
+      ORDER BY YEAR DESC, MONTH DESC, AGE_DAYS;
+
+  - name: gr_ir_top_items_for_vendor_followup
+    question: "Based on GR/IR aging and outstanding balances, draft vendor-facing follow-up templates we can use for high-priority GR/IR items, with realistic subject lines and concise bullet points."
+    sql: |
+      SELECT TOP 10
+        YEAR,
+        MONTH,
+        INVOICE_COUNT,
+        TOTAL_GRIR_BLNC
+      FROM ProcureSpendIQ.INFORMATION_MART.gr_ir_outstanding_balance_vw
+      ORDER BY TOTAL_GRIR_BLNC DESC;
+
+  - name: late_payment_amount
+    question: "Late payment amount"
+    sql: |
+      SELECT TOP 24 * FROM ProcureSpendIQ.INFORMATION_MART.late_payment_amount_vw ORDER BY YEAR DESC, MONTH DESC;
+
+  - name: invoices_by_po
+    question: "Invoices linked to purchase orders with PO amount"
+    sql: |
+      SELECT PURCHASE_ORDER_REFERENCE, PO_AMOUNT, PO_PURPOSE, COUNT(*) AS INVOICE_COUNT, SUM(INVOICE_AMOUNT_LOCAL) AS TOTAL_INVOICED
+      FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw WHERE PURCHASE_ORDER_REFERENCE IS NOT NULL
+      GROUP BY PURCHASE_ORDER_REFERENCE, PO_AMOUNT, PO_PURPOSE ORDER BY TOTAL_INVOICED DESC;
+
+  - name: cash_flow_forecast
+    question: "Forecast cash outflow for the next 7, 14, 30, 60, and 90 days"
+    sql: |
+     SELECT * FROM ProcureSpendIQ.INFORMATION_MART.cash_flow_forecast_vw;
+  # =============================================================================
+  # INVOICE DISPUTE PREDICTION QUERIES
+  # =============================================================================
+
+  - name: dispute_risk_scoring
+    question: "Which open invoices are at highest risk of becoming disputed?"
+    sql: |
+      WITH vendor_history AS (
+        SELECT
+          VENDOR_ID,
+          COUNT(*) AS total_invoices,
+          SUM(CASE WHEN INVOICE_STATUS = 'Disputed' THEN 1 ELSE 0 END) AS disputed_count,
+          ROUND(SUM(CASE WHEN INVOICE_STATUS = 'Disputed' THEN 1 ELSE 0 END) * 100.0
+                / NULLIF(COUNT(*), 0), 2) AS vendor_dispute_rate
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+        GROUP BY VENDOR_ID
+      ),
+      category_history AS (
+        SELECT
+          COALESCE(PO_PURPOSE, 'Unknown') AS PO_PURPOSE,
+          ROUND(SUM(CASE WHEN INVOICE_STATUS = 'Disputed' THEN 1 ELSE 0 END) * 100.0
+                / NULLIF(COUNT(*), 0), 2) AS category_dispute_rate
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+        GROUP BY PO_PURPOSE
+      ),
+      amount_stats AS (
+        SELECT
+          AVG(INVOICE_AMOUNT_LOCAL) AS avg_amount,
+          STDEV(INVOICE_AMOUNT_LOCAL) AS stddev_amount
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+      ),
+      po_variance AS (
+        SELECT
+          DOCUMENT_NUMBER,
+          CASE
+            WHEN PO_AMOUNT > 0 AND INVOICE_AMOUNT_LOCAL > 0
+            THEN ABS(INVOICE_AMOUNT_LOCAL - PO_AMOUNT) / PO_AMOUNT * 100
+            ELSE 0
+          END AS po_variance_pct
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE PURCHASE_ORDER_REFERENCE IS NOT NULL
+      ),
+      open_invoices AS (
+        SELECT
+          f.DOCUMENT_NUMBER,
+          f.VENDOR_ID,
+          v.VENDOR_NAME,
+          f.INVOICE_AMOUNT_LOCAL,
+          f.PO_AMOUNT,
+          f.PURCHASE_ORDER_REFERENCE,
+          f.PO_PURPOSE,
+          f.POSTING_DATE,
+          f.DUE_DATE,
+          f.AGING_DAYS,
+          -- Risk Factor 1: Vendor dispute history (0-30 points)
+          CASE WHEN COALESCE(vh.vendor_dispute_rate, 0) * 3 < 30 THEN COALESCE(vh.vendor_dispute_rate, 0) * 3 ELSE 30 END AS vendor_risk_score,
+          -- Risk Factor 2: Category dispute history (0-20 points)
+          CASE WHEN COALESCE(ch.category_dispute_rate, 0) * 2 < 20 THEN COALESCE(ch.category_dispute_rate, 0) * 2 ELSE 20 END AS category_risk_score,
+          -- Risk Factor 3: No PO reference (0 or 15 points)
+          CASE WHEN f.PURCHASE_ORDER_REFERENCE IS NULL THEN 15 ELSE 0 END AS no_po_risk_score,
+          -- Risk Factor 4: PO variance > 5% (0-20 points)
+          CASE
+            WHEN pv.po_variance_pct > 20 THEN 20
+            WHEN pv.po_variance_pct > 10 THEN 15
+            WHEN pv.po_variance_pct > 5 THEN 10
+            ELSE 0
+          END AS variance_risk_score,
+          -- Risk Factor 5: Unusual amount (0-15 points)
+          CASE
+            WHEN f.INVOICE_AMOUNT_LOCAL > (SELECT avg_amount + 2 * stddev_amount FROM amount_stats) THEN 15
+            WHEN f.INVOICE_AMOUNT_LOCAL > (SELECT avg_amount + stddev_amount FROM amount_stats) THEN 8
+            ELSE 0
+          END AS amount_risk_score,
+          vh.vendor_dispute_rate,
+          ch.category_dispute_rate,
+          pv.po_variance_pct
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw f
+        LEFT JOIN ProcureSpendIQ.INFORMATION_MART.dim_vendor_vw v ON f.VENDOR_ID = v.VENDOR_ID
+        LEFT JOIN vendor_history vh ON f.VENDOR_ID = vh.VENDOR_ID
+        LEFT JOIN category_history ch ON COALESCE(f.PO_PURPOSE, 'Unknown') = ch.PO_PURPOSE
+        LEFT JOIN po_variance pv ON f.DOCUMENT_NUMBER = pv.DOCUMENT_NUMBER
+        WHERE f.INVOICE_STATUS IN ('Open', 'Due')
+      )
+      SELECT TOP 50
+        DOCUMENT_NUMBER,
+        VENDOR_ID,
+        VENDOR_NAME,
+        INVOICE_AMOUNT_LOCAL,
+        PO_PURPOSE,
+        POSTING_DATE,
+        DUE_DATE,
+        -- Total risk score (0-100)
+        ROUND(vendor_risk_score + category_risk_score + no_po_risk_score
+              + variance_risk_score + amount_risk_score, 0) AS DISPUTE_RISK_SCORE,
+        CASE
+          WHEN (vendor_risk_score + category_risk_score + no_po_risk_score
+                + variance_risk_score + amount_risk_score) >= 60 THEN 'HIGH'
+          WHEN (vendor_risk_score + category_risk_score + no_po_risk_score
+                + variance_risk_score + amount_risk_score) >= 35 THEN 'MEDIUM'
+          ELSE 'LOW'
+        END AS RISK_LEVEL,
+        -- Risk breakdown
+        CONCAT(
+          CASE WHEN vendor_risk_score > 10 THEN 'Vendor history; ' ELSE '' END,
+          CASE WHEN category_risk_score > 8 THEN 'Category risk; ' ELSE '' END,
+          CASE WHEN no_po_risk_score > 0 THEN 'No PO; ' ELSE '' END,
+          CASE WHEN variance_risk_score > 0 THEN 'PO variance; ' ELSE '' END,
+          CASE WHEN amount_risk_score > 0 THEN 'Unusual amount' ELSE '' END
+        ) AS RISK_FACTORS,
+        ROUND(vendor_dispute_rate, 1) AS VENDOR_DISPUTE_RATE_PCT,
+        ROUND(COALESCE(po_variance_pct, 0), 1) AS PO_VARIANCE_PCT
+      FROM open_invoices
+      ORDER BY DISPUTE_RISK_SCORE DESC;
+
+  - name: dispute_pattern_analysis
+    question: "What patterns lead to invoice disputes?"
+    sql: |
+      WITH base AS (
+        SELECT
+          VENDOR_ID,
+          PO_PURPOSE,
+          INVOICE_STATUS,
+          INVOICE_AMOUNT_LOCAL,
+          CASE WHEN PURCHASE_ORDER_REFERENCE IS NULL THEN 'No PO' ELSE 'Has PO' END AS PO_STATUS,
+          CASE
+            WHEN INVOICE_AMOUNT_LOCAL < 1000 THEN 'Under $1K'
+            WHEN INVOICE_AMOUNT_LOCAL < 10000 THEN '$1K-$10K'
+            WHEN INVOICE_AMOUNT_LOCAL < 50000 THEN '$10K-$50K'
+            WHEN INVOICE_AMOUNT_LOCAL < 100000 THEN '$50K-$100K'
+            ELSE 'Over $100K'
+          END AS AMOUNT_BUCKET,
+          CASE WHEN INVOICE_STATUS = 'Disputed' THEN 1 ELSE 0 END AS IS_DISPUTED
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+      ),
+      by_category AS (
+        SELECT
+          'BY_CATEGORY' AS ANALYSIS_TYPE,
+          COALESCE(PO_PURPOSE, 'Unknown') AS DIMENSION,
+          COUNT(*) AS TOTAL_INVOICES,
+          SUM(IS_DISPUTED) AS DISPUTED_COUNT,
+          ROUND(SUM(IS_DISPUTED) * 100.0 / NULLIF(COUNT(*), 0), 2) AS DISPUTE_RATE_PCT,
+          ROUND(SUM(CASE WHEN IS_DISPUTED = 1 THEN INVOICE_AMOUNT_LOCAL ELSE 0 END), 0) AS DISPUTED_AMOUNT,
+          1 AS sort_order
+        FROM base
+        GROUP BY PO_PURPOSE
+        HAVING COUNT(*) >= 10
+      ),
+      by_po_status AS (
+        SELECT
+          'BY_PO_STATUS' AS ANALYSIS_TYPE,
+          PO_STATUS AS DIMENSION,
+          COUNT(*) AS TOTAL_INVOICES,
+          SUM(IS_DISPUTED) AS DISPUTED_COUNT,
+          ROUND(SUM(IS_DISPUTED) * 100.0 / NULLIF(COUNT(*), 0), 2) AS DISPUTE_RATE_PCT,
+          ROUND(SUM(CASE WHEN IS_DISPUTED = 1 THEN INVOICE_AMOUNT_LOCAL ELSE 0 END), 0) AS DISPUTED_AMOUNT,
+          2 AS sort_order
+        FROM base
+        GROUP BY PO_STATUS
+      ),
+      by_amount AS (
+        SELECT
+          'BY_AMOUNT_BUCKET' AS ANALYSIS_TYPE,
+          AMOUNT_BUCKET AS DIMENSION,
+          COUNT(*) AS TOTAL_INVOICES,
+          SUM(IS_DISPUTED) AS DISPUTED_COUNT,
+          ROUND(SUM(IS_DISPUTED) * 100.0 / NULLIF(COUNT(*), 0), 2) AS DISPUTE_RATE_PCT,
+          ROUND(SUM(CASE WHEN IS_DISPUTED = 1 THEN INVOICE_AMOUNT_LOCAL ELSE 0 END), 0) AS DISPUTED_AMOUNT,
+          3 AS sort_order
+        FROM base
+        GROUP BY AMOUNT_BUCKET
+      ),
+      by_vendor_top_ranked AS (
+        SELECT
+          'BY_VENDOR' AS ANALYSIS_TYPE,
+          CAST(VENDOR_ID AS VARCHAR(50)) AS DIMENSION,
+          COUNT(*) AS TOTAL_INVOICES,
+          SUM(IS_DISPUTED) AS DISPUTED_COUNT,
+          ROUND(SUM(IS_DISPUTED) * 100.0 / NULLIF(COUNT(*), 0), 2) AS DISPUTE_RATE_PCT,
+          ROUND(SUM(CASE WHEN IS_DISPUTED = 1 THEN INVOICE_AMOUNT_LOCAL ELSE 0 END), 0) AS DISPUTED_AMOUNT,
+          4 AS sort_order,
+          ROW_NUMBER() OVER (ORDER BY ROUND(SUM(IS_DISPUTED) * 100.0 / NULLIF(COUNT(*), 0), 2) DESC) AS rn
+        FROM base
+        GROUP BY VENDOR_ID
+        HAVING COUNT(*) >= 20 AND SUM(IS_DISPUTED) > 0
+      ),
+      by_vendor_top AS (
+        SELECT ANALYSIS_TYPE, DIMENSION, TOTAL_INVOICES, DISPUTED_COUNT, DISPUTE_RATE_PCT, DISPUTED_AMOUNT, sort_order
+        FROM by_vendor_top_ranked
+        WHERE rn <= 15
+      ),
+      combined AS (
+        SELECT ANALYSIS_TYPE, DIMENSION, TOTAL_INVOICES, DISPUTED_COUNT, DISPUTE_RATE_PCT, DISPUTED_AMOUNT, sort_order FROM by_category
+        UNION ALL SELECT ANALYSIS_TYPE, DIMENSION, TOTAL_INVOICES, DISPUTED_COUNT, DISPUTE_RATE_PCT, DISPUTED_AMOUNT, sort_order FROM by_po_status
+        UNION ALL SELECT ANALYSIS_TYPE, DIMENSION, TOTAL_INVOICES, DISPUTED_COUNT, DISPUTE_RATE_PCT, DISPUTED_AMOUNT, sort_order FROM by_amount
+        UNION ALL SELECT ANALYSIS_TYPE, DIMENSION, TOTAL_INVOICES, DISPUTED_COUNT, DISPUTE_RATE_PCT, DISPUTED_AMOUNT, sort_order FROM by_vendor_top
+      )
+      SELECT ANALYSIS_TYPE, DIMENSION, TOTAL_INVOICES, DISPUTED_COUNT, DISPUTE_RATE_PCT, DISPUTED_AMOUNT
+      FROM combined
+      ORDER BY sort_order, DISPUTE_RATE_PCT DESC;
+
+  - name: dispute_trend_forecast
+    question: "Show dispute rate trend for forecasting"
+    sql: |
+      WITH monthly AS (
+        SELECT
+          DATETRUNC(MONTH, POSTING_DATE) AS MONTH,
+          COUNT(*) AS TOTAL_INVOICES,
+          SUM(CASE WHEN INVOICE_STATUS = 'Disputed' THEN 1 ELSE 0 END) AS DISPUTED_COUNT,
+          ROUND(SUM(CASE WHEN INVOICE_STATUS = 'Disputed' THEN 1 ELSE 0 END) * 100.0
+                / NULLIF(COUNT(*), 0), 2) AS DISPUTE_RATE_PCT,
+          SUM(CASE WHEN INVOICE_STATUS = 'Disputed' THEN INVOICE_AMOUNT_LOCAL ELSE 0 END) AS DISPUTED_AMOUNT
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+          AND POSTING_DATE >= DATEADD(MONTH, -24, GETDATE())
+        GROUP BY DATETRUNC(MONTH, POSTING_DATE)
+      )
+      SELECT
+        MONTH,
+        TOTAL_INVOICES,
+        DISPUTED_COUNT,
+        DISPUTE_RATE_PCT,
+        DISPUTED_AMOUNT,
+        -- 3-month moving average for trend
+        ROUND(AVG(DISPUTE_RATE_PCT) OVER (ORDER BY MONTH ROWS BETWEEN 2 PRECEDING AND CURRENT ROW), 2)
+          AS DISPUTE_RATE_3M_AVG,
+        -- Month-over-month change
+        DISPUTE_RATE_PCT - LAG(DISPUTE_RATE_PCT) OVER (ORDER BY MONTH) AS MOM_CHANGE
+      FROM monthly
+      ORDER BY MONTH;
+
+  - name: dispute_resolution_time
+    question: "How long do disputes take to resolve?"
+    sql: |
+      WITH dispute_lifecycle AS (
+        SELECT
+          h1.INVOICE_NUMBER,
+          h1.EFFECTIVE_DATE AS DISPUTE_START_DATE,
+          MIN(h2.EFFECTIVE_DATE) AS RESOLUTION_DATE,
+          DATEDIFF(DAY, h1.EFFECTIVE_DATE, MIN(h2.EFFECTIVE_DATE)) AS DAYS_TO_RESOLVE,
+          h1.PO_PURPOSE
+        FROM ProcureSpendIQ.INFORMATION_MART.invoice_status_history_vw h1
+        LEFT JOIN ProcureSpendIQ.INFORMATION_MART.invoice_status_history_vw h2
+          ON h1.INVOICE_NUMBER = h2.INVOICE_NUMBER
+          AND h2.STATUS IN ('Paid', 'Open', 'Due')
+          AND h2.EFFECTIVE_DATE > h1.EFFECTIVE_DATE
+        WHERE h1.STATUS = 'Disputed'
+        GROUP BY h1.INVOICE_NUMBER, h1.EFFECTIVE_DATE, h1.PO_PURPOSE
+      )
+      SELECT
+        COALESCE(PO_PURPOSE, 'Unknown') AS CATEGORY,
+        COUNT(*) AS DISPUTE_COUNT,
+        ROUND(AVG(CAST(DAYS_TO_RESOLVE AS FLOAT)), 0) AS AVG_DAYS_TO_RESOLVE,
+        MIN(DAYS_TO_RESOLVE) AS MIN_DAYS,
+        MAX(DAYS_TO_RESOLVE) AS MAX_DAYS,
+        SUM(CASE WHEN RESOLUTION_DATE IS NULL THEN 1 ELSE 0 END) AS STILL_OPEN,
+        SUM(CASE WHEN DAYS_TO_RESOLVE > 30 THEN 1 ELSE 0 END) AS OVER_30_DAYS
+      FROM dispute_lifecycle
+      GROUP BY PO_PURPOSE
+      ORDER BY DISPUTE_COUNT DESC;
+
+
+  # =============================================================================
+  # LATE PAYMENT PROBABILITY QUERIES
+  # =============================================================================
+
+  - name: late_payment_risk_scoring
+    question: "Which invoices are most likely to be paid late?"
+    sql: |
+      WITH payment_history_ranked AS (
+        SELECT
+          YEAR, MONTH,
+          ON_TIME_PAYMENT_RATE_PCT,
+          100 - ON_TIME_PAYMENT_RATE_PCT AS LATE_RATE_PCT,
+          ROW_NUMBER() OVER (ORDER BY YEAR DESC, MONTH DESC) AS rn
+        FROM ProcureSpendIQ.INFORMATION_MART.on_time_payment_rate_vw
+      ),
+      payment_history AS (
+        SELECT YEAR, MONTH, ON_TIME_PAYMENT_RATE_PCT, LATE_RATE_PCT
+        FROM payment_history_ranked
+        WHERE rn <= 6
+      ),
+      avg_late_rate AS (
+        SELECT AVG(LATE_RATE_PCT) AS baseline_late_rate FROM payment_history
+      ),
+      cycle_time AS (
+        SELECT TOP 1 AVG_PAYMENT_CYCLE_TIME_DAYS AS avg_cycle
+        FROM ProcureSpendIQ.INFORMATION_MART.payment_processing_cycle_time_vw
+        ORDER BY YEAR DESC, MONTH DESC
+      ),
+      vendor_late_history AS (
+        SELECT
+          f.VENDOR_ID,
+          COUNT(*) AS total_paid,
+          SUM(CASE WHEN f.AGING_DAYS > 0 AND f.INVOICE_STATUS = 'Paid' THEN 1 ELSE 0 END) AS late_count,
+          ROUND(SUM(CASE WHEN f.AGING_DAYS > 0 AND f.INVOICE_STATUS = 'Paid' THEN 1 ELSE 0 END) * 100.0
+                / NULLIF(COUNT(*), 0), 2) AS vendor_late_rate
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw f
+        WHERE f.INVOICE_STATUS = 'Paid'
+        GROUP BY f.VENDOR_ID
+      ),
+      open_invoices AS (
+        SELECT
+          f.DOCUMENT_NUMBER,
+          f.VENDOR_ID,
+          v.VENDOR_NAME,
+          f.INVOICE_AMOUNT_LOCAL,
+          f.POSTING_DATE,
+          f.DUE_DATE,
+          DATEDIFF(DAY, GETDATE(), f.DUE_DATE) AS DAYS_UNTIL_DUE,
+          f.PO_PURPOSE,
+          f.INVOICE_STATUS,
+          (SELECT avg_cycle FROM cycle_time) AS AVG_CYCLE_DAYS,
+          COALESCE(vlh.vendor_late_rate, (SELECT baseline_late_rate FROM avg_late_rate)) AS vendor_late_rate
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw f
+        LEFT JOIN ProcureSpendIQ.INFORMATION_MART.dim_vendor_vw v ON f.VENDOR_ID = v.VENDOR_ID
+        LEFT JOIN vendor_late_history vlh ON f.VENDOR_ID = vlh.VENDOR_ID
+        WHERE f.INVOICE_STATUS IN ('Open', 'Due')
+      )
+      SELECT TOP 50
+        DOCUMENT_NUMBER,
+        VENDOR_ID,
+        VENDOR_NAME,
+        INVOICE_AMOUNT_LOCAL,
+        POSTING_DATE,
+        DUE_DATE,
+        DAYS_UNTIL_DUE,
+        PO_PURPOSE,
+        INVOICE_STATUS,
+        -- Risk Score Calculation (0-100)
+        ROUND(
+          -- Factor 1: Days until due vs processing time (0-40 points)
+          CASE
+            WHEN DAYS_UNTIL_DUE < 0 THEN 40  -- Already overdue
+            WHEN DAYS_UNTIL_DUE < AVG_CYCLE_DAYS THEN 35  -- Not enough time
+            WHEN DAYS_UNTIL_DUE < AVG_CYCLE_DAYS + 3 THEN 25  -- Cutting it close
+            WHEN DAYS_UNTIL_DUE < AVG_CYCLE_DAYS + 7 THEN 15  -- Some buffer
+            ELSE 5
+          END +
+          -- Factor 2: Vendor late history (0-35 points)
+          CASE WHEN vendor_late_rate * 0.35 < 35 THEN vendor_late_rate * 0.35 ELSE 35 END +
+          -- Factor 3: Invoice amount (larger = more approval steps) (0-15 points)
+          CASE
+            WHEN INVOICE_AMOUNT_LOCAL > 100000 THEN 15
+            WHEN INVOICE_AMOUNT_LOCAL > 50000 THEN 10
+            WHEN INVOICE_AMOUNT_LOCAL > 10000 THEN 5
+            ELSE 2
+          END +
+          -- Factor 4: Current status (0-10 points)
+          CASE WHEN INVOICE_STATUS = 'Due' THEN 10 ELSE 0 END
+        , 0) AS LATE_PAYMENT_RISK_SCORE,
+       
+        CASE
+          WHEN DAYS_UNTIL_DUE < 0 THEN 'ALREADY_OVERDUE'
+          WHEN DAYS_UNTIL_DUE < AVG_CYCLE_DAYS THEN 'HIGH_RISK'
+          WHEN DAYS_UNTIL_DUE < AVG_CYCLE_DAYS + 5 THEN 'MEDIUM_RISK'
+          ELSE 'LOW_RISK'
+        END AS RISK_LEVEL,
+       
+        ROUND(vendor_late_rate, 1) AS VENDOR_LATE_RATE_PCT,
+        ROUND(AVG_CYCLE_DAYS, 0) AS AVG_PROCESSING_DAYS,
+       
+        -- Action needed by date
+        DATEADD(DAY, -ROUND(AVG_CYCLE_DAYS, 0), DUE_DATE) AS ACTION_NEEDED_BY,
+        DATEDIFF(DAY, GETDATE(), DATEADD(DAY, -ROUND(AVG_CYCLE_DAYS, 0), DUE_DATE)) AS DAYS_TO_ACTION
+       
+      FROM open_invoices
+      ORDER BY LATE_PAYMENT_RISK_SCORE DESC;
+
+  - name: late_payment_drivers
+    question: "What factors are causing late payments?"
+    sql: |
+      WITH paid_invoices AS (
+        SELECT
+          f.VENDOR_ID,
+          v.VENDOR_NAME,
+          f.PO_PURPOSE,
+          f.INVOICE_AMOUNT_LOCAL,
+          f.COMPANY_CODE,
+          CASE WHEN f.PURCHASE_ORDER_REFERENCE IS NULL THEN 'No PO' ELSE 'Has PO' END AS PO_STATUS,
+          CASE
+            WHEN f.INVOICE_AMOUNT_LOCAL < 1000 THEN 'Under $1K'
+            WHEN f.INVOICE_AMOUNT_LOCAL < 10000 THEN '$1K-$10K'
+            WHEN f.INVOICE_AMOUNT_LOCAL < 50000 THEN '$10K-$50K'
+            ELSE 'Over $50K'
+          END AS AMOUNT_BUCKET,
+          CASE WHEN f.AGING_DAYS > 0 THEN 1 ELSE 0 END AS WAS_LATE,
+          f.AGING_DAYS
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw f
+        LEFT JOIN ProcureSpendIQ.INFORMATION_MART.dim_vendor_vw v ON f.VENDOR_ID = v.VENDOR_ID
+        WHERE f.INVOICE_STATUS = 'Paid'
+          AND f.POSTING_DATE >= DATEADD(MONTH, -12, GETDATE())
+      ),
+      by_category AS (
+        SELECT
+          'BY_CATEGORY' AS DRIVER_TYPE,
+          COALESCE(PO_PURPOSE, 'Unknown') AS DRIVER,
+          COUNT(*) AS TOTAL_PAID,
+          SUM(WAS_LATE) AS LATE_COUNT,
+          ROUND(SUM(WAS_LATE) * 100.0 / NULLIF(COUNT(*), 0), 2) AS LATE_RATE_PCT,
+          ROUND(AVG(CASE WHEN WAS_LATE = 1 THEN CAST(AGING_DAYS AS FLOAT) ELSE NULL END), 0) AS AVG_DAYS_LATE,
+          1 AS sort_order
+        FROM paid_invoices
+        GROUP BY PO_PURPOSE
+        HAVING COUNT(*) >= 20
+      ),
+      by_po_status AS (
+        SELECT
+          'BY_PO_STATUS' AS DRIVER_TYPE,
+          PO_STATUS AS DRIVER,
+          COUNT(*) AS TOTAL_PAID,
+          SUM(WAS_LATE) AS LATE_COUNT,
+          ROUND(SUM(WAS_LATE) * 100.0 / NULLIF(COUNT(*), 0), 2) AS LATE_RATE_PCT,
+          ROUND(AVG(CASE WHEN WAS_LATE = 1 THEN CAST(AGING_DAYS AS FLOAT) ELSE NULL END), 0) AS AVG_DAYS_LATE,
+          2 AS sort_order
+        FROM paid_invoices
+        GROUP BY PO_STATUS
+      ),
+      by_amount AS (
+        SELECT
+          'BY_AMOUNT' AS DRIVER_TYPE,
+          AMOUNT_BUCKET AS DRIVER,
+          COUNT(*) AS TOTAL_PAID,
+          SUM(WAS_LATE) AS LATE_COUNT,
+          ROUND(SUM(WAS_LATE) * 100.0 / NULLIF(COUNT(*), 0), 2) AS LATE_RATE_PCT,
+          ROUND(AVG(CASE WHEN WAS_LATE = 1 THEN CAST(AGING_DAYS AS FLOAT) ELSE NULL END), 0) AS AVG_DAYS_LATE,
+          3 AS sort_order
+        FROM paid_invoices
+        GROUP BY AMOUNT_BUCKET
+      ),
+      by_vendor_ranked AS (
+        SELECT
+          'BY_VENDOR' AS DRIVER_TYPE,
+          CONCAT(CAST(VENDOR_ID AS VARCHAR(50)), ' - ', COALESCE(VENDOR_NAME, 'Unknown')) AS DRIVER,
+          COUNT(*) AS TOTAL_PAID,
+          SUM(WAS_LATE) AS LATE_COUNT,
+          ROUND(SUM(WAS_LATE) * 100.0 / NULLIF(COUNT(*), 0), 2) AS LATE_RATE_PCT,
+          ROUND(AVG(CASE WHEN WAS_LATE = 1 THEN CAST(AGING_DAYS AS FLOAT) ELSE NULL END), 0) AS AVG_DAYS_LATE,
+          4 AS sort_order,
+          ROW_NUMBER() OVER (ORDER BY ROUND(SUM(WAS_LATE) * 100.0 / NULLIF(COUNT(*), 0), 2) DESC) AS rn
+        FROM paid_invoices
+        GROUP BY VENDOR_ID, VENDOR_NAME
+        HAVING COUNT(*) >= 20
+      ),
+      by_vendor AS (
+        SELECT DRIVER_TYPE, DRIVER, TOTAL_PAID, LATE_COUNT, LATE_RATE_PCT, AVG_DAYS_LATE, sort_order
+        FROM by_vendor_ranked
+        WHERE rn <= 10
+      ),
+      by_company AS (
+        SELECT
+          'BY_COMPANY_CODE' AS DRIVER_TYPE,
+          CAST(COMPANY_CODE AS VARCHAR(50)) AS DRIVER,
+          COUNT(*) AS TOTAL_PAID,
+          SUM(WAS_LATE) AS LATE_COUNT,
+          ROUND(SUM(WAS_LATE) * 100.0 / NULLIF(COUNT(*), 0), 2) AS LATE_RATE_PCT,
+          ROUND(AVG(CASE WHEN WAS_LATE = 1 THEN CAST(AGING_DAYS AS FLOAT) ELSE NULL END), 0) AS AVG_DAYS_LATE,
+          5 AS sort_order
+        FROM paid_invoices
+        GROUP BY COMPANY_CODE
+        HAVING COUNT(*) >= 20
+      ),
+      combined AS (
+        SELECT DRIVER_TYPE, DRIVER, TOTAL_PAID, LATE_COUNT, LATE_RATE_PCT, AVG_DAYS_LATE, sort_order FROM by_category
+        UNION ALL SELECT DRIVER_TYPE, DRIVER, TOTAL_PAID, LATE_COUNT, LATE_RATE_PCT, AVG_DAYS_LATE, sort_order FROM by_po_status
+        UNION ALL SELECT DRIVER_TYPE, DRIVER, TOTAL_PAID, LATE_COUNT, LATE_RATE_PCT, AVG_DAYS_LATE, sort_order FROM by_amount
+        UNION ALL SELECT DRIVER_TYPE, DRIVER, TOTAL_PAID, LATE_COUNT, LATE_RATE_PCT, AVG_DAYS_LATE, sort_order FROM by_vendor
+        UNION ALL SELECT DRIVER_TYPE, DRIVER, TOTAL_PAID, LATE_COUNT, LATE_RATE_PCT, AVG_DAYS_LATE, sort_order FROM by_company
+      )
+      SELECT DRIVER_TYPE, DRIVER, TOTAL_PAID, LATE_COUNT, LATE_RATE_PCT, AVG_DAYS_LATE
+      FROM combined
+      ORDER BY sort_order, LATE_RATE_PCT DESC;
+
+  - name: late_payment_trend_forecast
+    question: "Show late payment trend for forecasting"
+    sql: |
+      WITH monthly_metrics AS (
+        SELECT
+          l.YEAR,
+          l.MONTH,
+          l.LATE_PAYMENT_AMOUNT,
+          l.LATE_PAYMENT_COUNT,
+          l.LATE_PAYMENT_RATE_PCT,
+          o.ON_TIME_PAYMENT_RATE_PCT,
+          p.AVG_PAYMENT_CYCLE_TIME_DAYS
+        FROM ProcureSpendIQ.INFORMATION_MART.late_payment_amount_vw l
+        LEFT JOIN ProcureSpendIQ.INFORMATION_MART.on_time_payment_rate_vw o
+          ON l.YEAR = o.YEAR AND l.MONTH = o.MONTH
+        LEFT JOIN ProcureSpendIQ.INFORMATION_MART.payment_processing_cycle_time_vw p
+          ON l.YEAR = p.YEAR AND l.MONTH = p.MONTH
+      )
+      SELECT
+        YEAR,
+        MONTH,
+        LATE_PAYMENT_AMOUNT,
+        LATE_PAYMENT_COUNT,
+        LATE_PAYMENT_RATE_PCT,
+        ON_TIME_PAYMENT_RATE_PCT,
+        AVG_PAYMENT_CYCLE_TIME_DAYS,
+        -- 3-month moving averages
+        ROUND(AVG(LATE_PAYMENT_RATE_PCT) OVER (ORDER BY YEAR, MONTH ROWS BETWEEN 2 PRECEDING AND CURRENT ROW), 2)
+          AS LATE_RATE_3M_AVG,
+        ROUND(AVG(AVG_PAYMENT_CYCLE_TIME_DAYS) OVER (ORDER BY YEAR, MONTH ROWS BETWEEN 2 PRECEDING AND CURRENT ROW), 1)
+          AS CYCLE_TIME_3M_AVG,
+        -- Month-over-month change
+        LATE_PAYMENT_RATE_PCT - LAG(LATE_PAYMENT_RATE_PCT) OVER (ORDER BY YEAR, MONTH) AS LATE_RATE_MOM_CHANGE,
+        -- Trend indicator
+        CASE
+          WHEN LATE_PAYMENT_RATE_PCT > LAG(LATE_PAYMENT_RATE_PCT) OVER (ORDER BY YEAR, MONTH)
+               AND LAG(LATE_PAYMENT_RATE_PCT) OVER (ORDER BY YEAR, MONTH) >
+                   LAG(LATE_PAYMENT_RATE_PCT, 2) OVER (ORDER BY YEAR, MONTH)
+          THEN 'WORSENING'
+          WHEN LATE_PAYMENT_RATE_PCT < LAG(LATE_PAYMENT_RATE_PCT) OVER (ORDER BY YEAR, MONTH)
+               AND LAG(LATE_PAYMENT_RATE_PCT) OVER (ORDER BY YEAR, MONTH) <
+                   LAG(LATE_PAYMENT_RATE_PCT, 2) OVER (ORDER BY YEAR, MONTH)
+          THEN 'IMPROVING'
+          ELSE 'STABLE'
+        END AS TREND_DIRECTION
+      FROM monthly_metrics
+      ORDER BY YEAR, MONTH;
+
+  - name: at_risk_payment_summary
+    question: "Summary of invoices at risk of late payment"
+    sql: |
+      WITH cycle_time AS (
+        SELECT TOP 1 AVG_PAYMENT_CYCLE_TIME_DAYS AS avg_cycle
+        FROM ProcureSpendIQ.INFORMATION_MART.payment_processing_cycle_time_vw
+        ORDER BY YEAR DESC, MONTH DESC
+      ),
+      risk_buckets AS (
+        SELECT
+          f.DOCUMENT_NUMBER,
+          f.INVOICE_AMOUNT_LOCAL,
+          f.VENDOR_ID,
+          DATEDIFF(DAY, GETDATE(), f.DUE_DATE) AS DAYS_UNTIL_DUE,
+          (SELECT avg_cycle FROM cycle_time) AS AVG_CYCLE,
+          CASE
+            WHEN DATEDIFF(DAY, GETDATE(), f.DUE_DATE) < 0 THEN 'OVERDUE'
+            WHEN DATEDIFF(DAY, GETDATE(), f.DUE_DATE) < (SELECT avg_cycle FROM cycle_time) THEN 'HIGH_RISK'
+            WHEN DATEDIFF(DAY, GETDATE(), f.DUE_DATE) < (SELECT avg_cycle FROM cycle_time) + 5 THEN 'MEDIUM_RISK'
+            ELSE 'ON_TRACK'
+          END AS RISK_CATEGORY
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw f
+        WHERE f.INVOICE_STATUS IN ('Open', 'Due')
+      )
+      SELECT
+        RISK_CATEGORY,
+        COUNT(*) AS INVOICE_COUNT,
+        COUNT(DISTINCT VENDOR_ID) AS VENDOR_COUNT,
+        ROUND(SUM(INVOICE_AMOUNT_LOCAL), 2) AS TOTAL_AMOUNT,
+        ROUND(AVG(INVOICE_AMOUNT_LOCAL), 2) AS AVG_AMOUNT,
+        ROUND(MIN(CAST(DAYS_UNTIL_DUE AS FLOAT)), 0) AS MIN_DAYS_TO_DUE,
+        ROUND(MAX(CAST(DAYS_UNTIL_DUE AS FLOAT)), 0) AS MAX_DAYS_TO_DUE,
+        CASE RISK_CATEGORY
+          WHEN 'OVERDUE' THEN 'Immediate action required - contact vendor, escalate'
+          WHEN 'HIGH_RISK' THEN 'Expedite approval - insufficient processing time'
+          WHEN 'MEDIUM_RISK' THEN 'Monitor closely - prioritize in payment run'
+          ELSE 'Standard processing'
+        END AS RECOMMENDED_ACTION
+      FROM risk_buckets
+      GROUP BY RISK_CATEGORY
+      ORDER BY
+        CASE RISK_CATEGORY
+          WHEN 'OVERDUE' THEN 1
+          WHEN 'HIGH_RISK' THEN 2
+          WHEN 'MEDIUM_RISK' THEN 3
+          ELSE 4
+        END;
+
+  # =============================================================================
+  # MONTHLY SPEND BY CATEGORY FORECASTING QUERIES
+  # =============================================================================
+
+  - name: monthly_spend_by_category
+    question: "Show monthly spend by category for forecasting"
+    sql: |
+      WITH monthly_category AS (
+        SELECT
+          DATETRUNC(MONTH, POSTING_DATE) AS MONTH,
+          COALESCE(PO_PURPOSE, 'Unknown') AS CATEGORY,
+          COUNT(*) AS INVOICE_COUNT,
+          SUM(INVOICE_AMOUNT_LOCAL) AS SPEND,
+          COUNT(DISTINCT VENDOR_ID) AS VENDOR_COUNT
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+          AND POSTING_DATE >= DATEADD(MONTH, -24, GETDATE())
+        GROUP BY DATETRUNC(MONTH, POSTING_DATE), COALESCE(PO_PURPOSE, 'Unknown')
+      )
+      SELECT
+        MONTH,
+        CATEGORY,
+        INVOICE_COUNT,
+        SPEND,
+        VENDOR_COUNT,
+        -- Month-over-month change
+        SPEND - LAG(SPEND) OVER (PARTITION BY CATEGORY ORDER BY MONTH) AS MOM_CHANGE,
+        ROUND((SPEND - LAG(SPEND) OVER (PARTITION BY CATEGORY ORDER BY MONTH)) * 100.0
+              / NULLIF(LAG(SPEND) OVER (PARTITION BY CATEGORY ORDER BY MONTH), 0), 1) AS MOM_CHANGE_PCT,
+        -- Year-over-year change
+        SPEND - LAG(SPEND, 12) OVER (PARTITION BY CATEGORY ORDER BY MONTH) AS YOY_CHANGE,
+        ROUND((SPEND - LAG(SPEND, 12) OVER (PARTITION BY CATEGORY ORDER BY MONTH)) * 100.0
+              / NULLIF(LAG(SPEND, 12) OVER (PARTITION BY CATEGORY ORDER BY MONTH), 0), 1) AS YOY_CHANGE_PCT,
+        -- 3-month moving average
+        ROUND(AVG(SPEND) OVER (PARTITION BY CATEGORY ORDER BY MONTH ROWS BETWEEN 2 PRECEDING AND CURRENT ROW), 2)
+          AS SPEND_3M_AVG
+      FROM monthly_category
+      ORDER BY MONTH DESC, SPEND DESC;
+  - name: category_spend_summary
+    question: "Summarize spend by category with trends"
+    sql: |
+      WITH current_month AS (
+        SELECT
+          COALESCE(PO_PURPOSE, 'Unknown') AS CATEGORY,
+          SUM(INVOICE_AMOUNT_LOCAL) AS THIS_MONTH_SPEND,
+          COUNT(*) AS THIS_MONTH_COUNT
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+          AND DATETRUNC(month, POSTING_DATE) = DATETRUNC(month, GETDATE())
+        GROUP BY PO_PURPOSE
+      ),
+      last_month AS (
+        SELECT
+          COALESCE(PO_PURPOSE, 'Unknown') AS CATEGORY,
+          SUM(INVOICE_AMOUNT_LOCAL) AS LAST_MONTH_SPEND,
+          COUNT(*) AS LAST_MONTH_COUNT
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+          AND DATETRUNC(month, POSTING_DATE) = DATETRUNC(month, DATEADD(month, -1, GETDATE()))
+        GROUP BY PO_PURPOSE
+      ),
+      ytd AS (
+        SELECT
+          COALESCE(PO_PURPOSE, 'Unknown') AS CATEGORY,
+          SUM(INVOICE_AMOUNT_LOCAL) AS YTD_SPEND,
+          COUNT(*) AS YTD_COUNT
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+          AND DATETRUNC(year, POSTING_DATE) = DATETRUNC(year, GETDATE())
+        GROUP BY PO_PURPOSE
+      ),
+      last_year_ytd AS (
+        SELECT
+          COALESCE(PO_PURPOSE, 'Unknown') AS CATEGORY,
+          SUM(INVOICE_AMOUNT_LOCAL) AS LAST_YEAR_YTD_SPEND
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+          AND POSTING_DATE >= DATETRUNC(year, DATEADD(year, -1, GETDATE()))
+          AND POSTING_DATE < DATEADD(year, -1, GETDATE())
+        GROUP BY PO_PURPOSE
+      ),
+      total_spend AS (
+        SELECT SUM(YTD_SPEND) AS total FROM ytd
+      )
+      SELECT
+        COALESCE(y.CATEGORY, cm.CATEGORY, lm.CATEGORY) AS CATEGORY,
+        COALESCE(cm.THIS_MONTH_SPEND, 0) AS THIS_MONTH_SPEND,
+        COALESCE(lm.LAST_MONTH_SPEND, 0) AS LAST_MONTH_SPEND,
+        ROUND((COALESCE(cm.THIS_MONTH_SPEND, 0) - COALESCE(lm.LAST_MONTH_SPEND, 0)) * 100.0
+              / NULLIF(lm.LAST_MONTH_SPEND, 0), 1) AS MOM_CHANGE_PCT,
+        COALESCE(y.YTD_SPEND, 0) AS YTD_SPEND,
+        COALESCE(ly.LAST_YEAR_YTD_SPEND, 0) AS LAST_YEAR_YTD_SPEND,
+        ROUND((COALESCE(y.YTD_SPEND, 0) - COALESCE(ly.LAST_YEAR_YTD_SPEND, 0)) * 100.0
+              / NULLIF(ly.LAST_YEAR_YTD_SPEND, 0), 1) AS YOY_CHANGE_PCT,
+        ROUND(COALESCE(y.YTD_SPEND, 0) * 100.0 / NULLIF((SELECT total FROM total_spend), 0), 2) AS PCT_OF_TOTAL_SPEND,
+        y.YTD_COUNT AS INVOICE_COUNT_YTD
+      FROM ytd y
+      FULL OUTER JOIN current_month cm ON y.CATEGORY = cm.CATEGORY
+      FULL OUTER JOIN last_month lm ON y.CATEGORY = lm.CATEGORY
+      LEFT JOIN last_year_ytd ly ON y.CATEGORY = ly.CATEGORY
+      ORDER BY YTD_SPEND DESC;
+
+  - name: category_seasonality_analysis
+    question: "Analyze seasonality patterns in spend by category"
+    sql: |
+      WITH monthly_data AS (
+        SELECT
+          YEAR(POSTING_DATE) AS YEAR,
+          MONTH(POSTING_DATE) AS MONTH_NUM,
+          FORMAT(POSTING_DATE, 'MMM') AS MONTH_NAME,
+          COALESCE(PO_PURPOSE, 'Unknown') AS CATEGORY,
+          SUM(INVOICE_AMOUNT_LOCAL) AS SPEND
+        FROM ProcureSpendIQ.INFORMATION_MART.fact_all_sources_vw
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+          AND POSTING_DATE >= DATEADD(YEAR, -3, GETDATE())
+        GROUP BY YEAR(POSTING_DATE), MONTH(POSTING_DATE), FORMAT(POSTING_DATE, 'MMM'), COALESCE(PO_PURPOSE, 'Unknown')
+      ),
+      category_avg AS (
+        SELECT CATEGORY, AVG(SPEND) AS avg_monthly_spend
+        FROM monthly_data
+        GROUP BY CATEGORY
+      ),
+      seasonality AS (
+        SELECT
+          m.MONTH_NUM,
+          m.MONTH_NAME,
+          m.CATEGORY,
+          ROUND(AVG(m.SPEND), 2) AS AVG_SPEND_FOR_MONTH,
+          ROUND(AVG(m.SPEND) / NULLIF(c.avg_monthly_spend, 0), 3) AS SEASONALITY_INDEX,
+          COUNT(DISTINCT m.YEAR) AS YEARS_OF_DATA
+        FROM monthly_data m
+        JOIN category_avg c ON m.CATEGORY = c.CATEGORY
+        GROUP BY m.MONTH_NUM, m.MONTH_NAME, m.CATEGORY, c.avg_monthly_spend
+      )
+      SELECT
+        MONTH_NUM,
+        MONTH_NAME,
+        CATEGORY,
+        AVG_SPEND_FOR_MONTH,
+        SEASONALITY_INDEX,
+        CASE
+          WHEN SEASONALITY_INDEX >= 1.2 THEN 'HIGH_SEASON'
+          WHEN SEASONALITY_INDEX <= 0.8 THEN 'LOW_SEASON'
+          ELSE 'NORMAL'
+        END AS SEASON_TYPE,
+        YEARS_OF_DATA,
+        ROUND((SEASONALITY_INDEX - 1) * 100, 1) AS PCT_VS_AVERAGE
+      FROM seasonality
+      ORDER BY CATEGORY, MONTH_NUM;
+
+  - name: category_spend_forecast_inputs
+    question: "Generate forecast inputs for spend by category"
+    sql: |
+      WITH monthly_history AS (
+        SELECT
+          DATETRUNC(MONTH, POSTING_DATE) AS MONTH,
+          COALESCE(PO_PURPOSE, 'Unknown') AS CATEGORY,
+          SUM(INVOICE_AMOUNT_LOCAL) AS SPEND,
+          COUNT(*) AS INVOICE_COUNT,
+          COUNT(DISTINCT VENDOR_ID) AS ACTIVE_VENDORS
+        FROM ProcureSpendIQ.INFORMATION_MART.[fact_all_sources_vw]
+        WHERE UPPER(INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+          AND POSTING_DATE >= DATEADD(MONTH, -24, GETDATE())
+        GROUP BY DATETRUNC(MONTH, POSTING_DATE), COALESCE(PO_PURPOSE, 'Unknown')
+      ),
+      category_stats AS (
+        SELECT
+          CATEGORY,
+          COUNT(*) AS DATA_POINTS,
+          ROUND(AVG(CAST(SPEND AS FLOAT)), 2) AS AVG_MONTHLY_SPEND,
+          ROUND(STDEV(CAST(SPEND AS FLOAT)), 2) AS STDDEV_SPEND,
+          ROUND(MIN(SPEND), 2) AS MIN_SPEND,
+          ROUND(MAX(SPEND), 2) AS MAX_SPEND,
+          ROUND(AVG(CAST(INVOICE_COUNT AS FLOAT)), 0) AS AVG_INVOICE_COUNT,
+          ROUND(AVG(CAST(ACTIVE_VENDORS AS FLOAT)), 0) AS AVG_VENDOR_COUNT
+        FROM monthly_history
+        GROUP BY CATEGORY
+      ),
+      monthly_history_with_stats AS (
+        SELECT
+          CATEGORY,
+          MONTH,
+          SPEND,
+          DATEDIFF(SECOND, '1970-01-01', MONTH) AS MONTH_EPOCH,
+          AVG(CAST(DATEDIFF(SECOND, '1970-01-01', MONTH) AS FLOAT)) OVER (PARTITION BY CATEGORY) AS AVG_EPOCH,
+          AVG(SPEND) OVER (PARTITION BY CATEGORY) AS AVG_SPEND_BY_CATEGORY
+        FROM monthly_history
+        WHERE MONTH >= DATEADD(MONTH, -6, DATETRUNC(MONTH, GETDATE()))
+      ),
+      recent_trend AS (
+        SELECT
+          CATEGORY,
+          ROUND((
+            SUM((MONTH_EPOCH - AVG_EPOCH) * (SPEND - AVG_SPEND_BY_CATEGORY))
+            / NULLIF(SUM(POWER(MONTH_EPOCH - AVG_EPOCH, 2)), 0)
+          ) * 30 * 24 * 3600, 2) AS MONTHLY_TREND_SLOPE
+        FROM monthly_history_with_stats
+        GROUP BY CATEGORY
+      ),
+      growth_rate AS (
+        SELECT
+          h1.CATEGORY,
+          ROUND(((h1.SPEND - h2.SPEND) / NULLIF(h2.SPEND, 0)) * 100, 2) AS RECENT_GROWTH_PCT
+        FROM (
+          SELECT CATEGORY, SUM(SPEND) AS SPEND
+          FROM monthly_history
+          WHERE MONTH >= DATEADD(MONTH, -3, DATETRUNC(MONTH, GETDATE()))
+          GROUP BY CATEGORY
+        ) h1
+        JOIN (
+          SELECT CATEGORY, SUM(SPEND) AS SPEND
+          FROM monthly_history
+          WHERE MONTH >= DATEADD(MONTH, -6, DATETRUNC(MONTH, GETDATE()))
+            AND MONTH < DATEADD(MONTH, -3, DATETRUNC(MONTH, GETDATE()))
+          GROUP BY CATEGORY
+        ) h2 ON h1.CATEGORY = h2.CATEGORY
+      )
+      SELECT
+        s.CATEGORY,
+        s.DATA_POINTS,
+        s.AVG_MONTHLY_SPEND,
+        s.STDDEV_SPEND,
+        ROUND(s.STDDEV_SPEND / NULLIF(s.AVG_MONTHLY_SPEND, 0) * 100, 1) AS COEFFICIENT_OF_VARIATION,
+        s.MIN_SPEND,
+        s.MAX_SPEND,
+        s.AVG_INVOICE_COUNT,
+        s.AVG_VENDOR_COUNT,
+        COALESCE(g.RECENT_GROWTH_PCT, 0) AS RECENT_3M_GROWTH_PCT,
+        ROUND(s.AVG_MONTHLY_SPEND * (1 + COALESCE(g.RECENT_GROWTH_PCT, 0) / 100 / 3), 2) AS NEXT_MONTH_FORECAST,
+        CASE
+          WHEN s.STDDEV_SPEND / NULLIF(s.AVG_MONTHLY_SPEND, 0) < 0.15 THEN 'HIGH'
+          WHEN s.STDDEV_SPEND / NULLIF(s.AVG_MONTHLY_SPEND, 0) < 0.30 THEN 'MEDIUM'
+          ELSE 'LOW'
+        END AS FORECAST_CONFIDENCE
+      FROM category_stats s
+      LEFT JOIN growth_rate g ON s.CATEGORY = g.CATEGORY
+      ORDER BY s.AVG_MONTHLY_SPEND DESC;
+
+  - name: category_vendor_concentration
+    question: "Analyze vendor concentration within each spend category"
+    sql: |
+      WITH category_vendor AS (
+        SELECT
+          COALESCE(f.PO_PURPOSE, 'Unknown') AS CATEGORY,
+          f.VENDOR_ID,
+          v.VENDOR_NAME,
+          SUM(f.INVOICE_AMOUNT_LOCAL) AS VENDOR_SPEND,
+          COUNT(*) AS INVOICE_COUNT
+        FROM ProcureSpendIQ.INFORMATION_MART.[fact_all_sources_vw] f
+        LEFT JOIN ProcureSpendIQ.INFORMATION_MART.[dim_vendor_vw] v ON f.VENDOR_ID = v.VENDOR_ID
+        WHERE UPPER(f.INVOICE_STATUS) NOT IN ('CANCELLED', 'REJECTED')
+          AND f.POSTING_DATE >= DATEADD(YEAR, -1, GETDATE())
+        GROUP BY COALESCE(f.PO_PURPOSE, 'Unknown'), f.VENDOR_ID, v.VENDOR_NAME
+      ),
+      category_total AS (
+        SELECT CATEGORY, SUM(VENDOR_SPEND) AS TOTAL_SPEND, COUNT(DISTINCT VENDOR_ID) AS VENDOR_COUNT
+        FROM category_vendor
+        GROUP BY CATEGORY
+      ),
+      ranked AS (
+        SELECT
+          cv.CATEGORY,
+          cv.VENDOR_ID,
+          cv.VENDOR_NAME,
+          cv.VENDOR_SPEND,
+          ct.TOTAL_SPEND,
+          ct.VENDOR_COUNT AS TOTAL_VENDORS_IN_CATEGORY,
+          ROUND(cv.VENDOR_SPEND * 100.0 / NULLIF(ct.TOTAL_SPEND, 0), 2) AS PCT_OF_CATEGORY,
+          ROW_NUMBER() OVER (PARTITION BY cv.CATEGORY ORDER BY cv.VENDOR_SPEND DESC) AS VENDOR_RANK
+        FROM category_vendor cv
+        JOIN category_total ct ON cv.CATEGORY = ct.CATEGORY
+      ),
+      concentration AS (
+        SELECT
+          CATEGORY,
+          SUM(CASE WHEN VENDOR_RANK <= 1 THEN PCT_OF_CATEGORY ELSE 0 END) AS TOP_1_CONCENTRATION,
+          SUM(CASE WHEN VENDOR_RANK <= 3 THEN PCT_OF_CATEGORY ELSE 0 END) AS TOP_3_CONCENTRATION,
+          SUM(CASE WHEN VENDOR_RANK <= 5 THEN PCT_OF_CATEGORY ELSE 0 END) AS TOP_5_CONCENTRATION,
+          MAX(TOTAL_VENDORS_IN_CATEGORY) AS VENDOR_COUNT,
+          MAX(TOTAL_SPEND) AS CATEGORY_SPEND
+        FROM ranked
+        GROUP BY CATEGORY
+      )
+      SELECT
+        CATEGORY,
+        CATEGORY_SPEND,
+        VENDOR_COUNT,
+        ROUND(TOP_1_CONCENTRATION, 1) AS TOP_1_VENDOR_PCT,
+        ROUND(TOP_3_CONCENTRATION, 1) AS TOP_3_VENDORS_PCT,
+        ROUND(TOP_5_CONCENTRATION, 1) AS TOP_5_VENDORS_PCT,
+        CASE
+          WHEN TOP_1_CONCENTRATION > 50 THEN 'CRITICAL - Single vendor dependency'
+          WHEN TOP_3_CONCENTRATION > 80 THEN 'HIGH - Limited supplier base'
+          WHEN TOP_5_CONCENTRATION > 90 THEN 'MEDIUM - Moderate concentration'
+          ELSE 'LOW - Diversified'
+        END AS CONCENTRATION_RISK,
+        CASE
+          WHEN TOP_1_CONCENTRATION > 50 THEN 'Identify alternative suppliers; negotiate backup contracts'
+          WHEN TOP_3_CONCENTRATION > 80 THEN 'Develop secondary suppliers; split future orders'
+          ELSE 'Monitor; maintain competitive bidding'
+        END AS RECOMMENDED_ACTION
+      FROM concentration
+      ORDER BY CATEGORY_SPEND DESC;
+
+  - name: early_payment_candidates
+    question: "Which invoices should we pay early to capture discounts?"
+    sql: "SELECT * FROM ProcureSpendIQ.INFORMATION_MART.early_payment_candidates_vw"
+
+  - name: payment_timing_recommendation
+    question: "What is the optimal payment timing strategy for this week?"
+    sql: "SELECT * FROM ProcureSpendIQ.INFORMATION_MART.payment_timing_recommendation_vw"
+
+sample_questions:
+  # Invoice & Spend Analysis
+  - "What is the total spend this month?"
+  - "Show me top 10 vendors by spend"
+  - "What is the total invoice amount excluding cancelled and rejected invoices?"
+  - "Show monthly spend trend for the last 6 months"
+  - "What is the spend breakdown by PO purpose?"
+  
+  # Overdue & Payment Analysis
+  - "How many overdue invoices do we have?"
+  - "What is the total overdue amount?"
+  - "Show aging analysis of invoices"
+  - "Which vendors have the most overdue invoices?"
+  - "What is the average payment cycle time?"
+  
+  # Vendor Analysis
+  - "Show vendor concentration risk"
+  - "Which vendors should we diversify from?"
+  - "List top vendors by region"
+  - "Show duplicate payment risks"
+  - "What is vendor performance by category?"
+  
+  # AP & DPO Metrics
+  - "What is the current AP balance?"
+  - "Show AP balance trend by month"
+  - "What is the average DPO?"
+  - "How does DPO compare across categories?"
+  - "Show DPO trend over time"
+  
+  # GR/IR Analysis
+  - "What is the total GR/IR balance?"
+  - "Show GR/IR aging buckets"
+  - "Which purchase orders have outstanding GR/IR?"
+  - "What are the GR/IR hotspots for clearing?"
+  - "How much working capital is tied up in GR/IR?"
+  
+  # Cost Reduction & Optimization
+  - "What are the cost reduction opportunities?"
+  - "Which invoices qualify for early payment discounts?"
+  - "Show payment timing recommendations"
+  - "What is the savings potential from vendor consolidation?"
+  - "Identify maverick spending patterns"
+  
+  # Compliance & Risk
+  - "Show invoices without PO reference"
+  - "What is the three-way match exception rate?"
+  - "List invoices with price variance over 10%"
+  - "Show duplicate payment risks"
+  - "What are the high-risk vendors?"
+  
+  # Forecasting & Trends
+  - "Forecast cash outflow for the next 30 days"
+  - "Show spend seasonality by category"
+  - "What is the spend forecast for next month?"
+  - "Compare this quarter vs last quarter spend"
+  - "Show year-over-year spend growth by category"
+  
+  # Company & Region Analysis
+  - "Show spend breakdown by company code"
+  - "What is regional spend distribution?"
+  - "Compare spend across entities"
+  - "Show cross-company vendor usage"
+  
+  # Advanced Analytics
+  - "Why is spend higher this month?"
+  - "What are the main drivers of spend increase?"
+  - "Show category vendor concentration"
+  - "Analyze spend volatility by category"
+  - "What is the optimal payment strategy for this week?"
