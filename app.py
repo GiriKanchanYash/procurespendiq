@@ -211,7 +211,7 @@ st.set_page_config(
     layout="wide",
     page_icon=PAGE_ICON_URL,
 )
-display_session_history_sidebar()
+# display_session_history_sidebar()
 # ---------- Fabric Session ----------
 # Session object is created immediately (no network call — just builds the object).
 # All DB work is deferred until after Streamlit binds its port, so Azure's 230s
@@ -1373,6 +1373,7 @@ def load_clean_ui_light():
       height: 120px !important; max-height: 120px !important; width: auto !important;
       object-fit: contain !important;
       display: block;
+      transform: translateY(-42px);
     }
 
     /* Preset buttons (Last 30 Days / QTD / YTD / Custom) — same size, one line */
