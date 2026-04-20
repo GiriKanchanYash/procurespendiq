@@ -211,7 +211,7 @@ st.set_page_config(
     layout="wide",
     page_icon=PAGE_ICON_URL,
 )
-display_session_history_sidebar()
+# display_session_history_sidebar()
 # ---------- Fabric Session ----------
 # Session object is created immediately (no network call — just builds the object).
 # All DB work is deferred until after Streamlit binds its port, so Azure's 230s
@@ -4988,13 +4988,65 @@ if st.session_state.get('page') == 'genie':
                 else:
                     st.caption("Ask questions to see most frequent across all users.")
         # Removed stray closing div that could render as text
-    
+
     # RIGHT COLUMN: AI Assistant
     with right_col:
         with st.container(border=True):
+
+            # Header row: title + 4 buttons
+            title_col, btn1, btn2, btn3, btn4 = st.columns([3, 1.8, 1.8, 1.8, 1.8])
+
+            with title_col:
+                st.markdown("""
+                <div style="font-size:16px;font-weight:800;color:#0f172a;">
+                    AI Assistant
+                </div>
+                """, unsafe_allow_html=True)
+
+            with btn1:
+                if st.button("Chats", use_container_width=True):
+                    st.session_state.active_mode = "chats"
+
+            with btn2:
+                if st.button("Summarize", use_container_width=True):
+                    st.session_state.active_mode = "summarize"
+
+            with btn3:
+                if st.button("Export MD", use_container_width=True):
+                    st.session_state.active_mode = "export"
+
+            with btn4:
+                if st.button("Clear", use_container_width=True):
+                    st.session_state.show_analysis = False
+                    st.session_state.analyst_response = None
+                    st.rerun()
+
             st.markdown("""
-            <div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:16px;">AI Assistant</div>
-            """, unsafe_allow_html=True)
+                <style>
+                /* Dark grey buttons */
+                div[data-testid="stButton"] button {
+                    background-color: #8F8F8F;   /* light grey */
+                    color: #242424;              /* dark grey text */
+                    border: 1.5px solid #8F8F8F;
+                    border-radius: 50px;
+                    font-weight: 600;
+                    font-color: #4b5563;
+                }
+
+                /* Hover state */
+                div[data-testid="stButton"] button:hover {
+                    background-color: #C4C4C4;   /* darker grey on hover */
+                    border-color: #C4C4C4;
+                    color: #4b5563 !important;
+                }
+
+                /* Focus fix */
+                div[data-testid="stButton"] button:focus {
+                    box-shadow: none;
+                }
+                </style>
+                """, unsafe_allow_html=True)
+
             
             # Chat area
             if st.session_state.show_analysis and st.session_state.analyst_response:
