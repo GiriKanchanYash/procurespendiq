@@ -167,29 +167,97 @@ def _extract_key_topics(queries: list) -> list:
     return list(topics)[:3]
 
 
-def display_session_history_sidebar():
-    """Display last 2 sessions in Streamlit sidebar."""
-    _initialize_genie_session()
-    with st.sidebar:
-        st.markdown("---")
-        st.subheader("Session History")
-        if st.session_state.genie_previous_sessions:
-            for i, session in enumerate(st.session_state.genie_previous_sessions[-2:], 1):
-                session_id_short = session.get('session_id', 'Unknown')[:25]
-                with st.expander(f"Session {i}: {session_id_short}..."):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Queries", session.get('query_count', 0))
-                    with col2:
-                        topics = session.get('key_topics', [])
-                        st.write(f"**Topics:** {', '.join(topics) if topics else 'General'}")
-                    st.write("**Questions Asked:**")
-                    for q in session.get('queries', [])[:3]:
-                        st.write(f"- {q}")
-                    if len(session.get('queries', [])) > 3:
-                        st.text(f"... and {len(session['queries']) - 3} more")
-        else:
-            st.info("No previous sessions")
+def _initialize_chat_state():
+    """Initialize chat history and related state variables."""
+    if "genie_chat_history" not in st.session_state:
+        st.session_state.genie_chat_history = []
+    if "show_chat_history" not in st.session_state:
+        st.session_state.show_chat_history = False
+    if "genie_input_version" not in st.session_state:
+        st.session_state.genie_input_version = 0
+
+
+def add_to_chat_history(question: str, response_text: str = ""):
+    """Add a message to the chat history."""
+    _initialize_chat_state()
+    st.session_state.genie_chat_history.append({
+        "role": "user",
+        "content": question,
+        "timestamp": datetime.now().isoformat(),
+        "response": response_text
+    })
+
+
+def generate_chat_summary() -> str:
+    """Generate a summary of the chat conversation."""
+    _initialize_chat_state()
+    if not st.session_state.genie_chat_history:
+        return "No chat history to summarize."
+    
+    summary = "# Chat Summary\n\n"
+    summary += f"**Session ID:** {st.session_state.get('genie_session_id', 'Unknown')}\n"
+    summary += f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    summary += f"**Total Questions:** {len(st.session_state.genie_chat_history)}\n\n"
+    
+    summary += "## Questions Asked\n\n"
+    for i, msg in enumerate(st.session_state.genie_chat_history, 1):
+        summary += f"{i}. {msg.get('content', '')}\n"
+    
+    return summary
+
+
+def export_chat_as_markdown() -> str:
+    """Export the chat history as markdown."""
+    _initialize_chat_state()
+    if not st.session_state.genie_chat_history:
+        return "# ProcureIQ Genie Chat Export\n\nNo chat history to export."
+    
+    markdown = "# ProcureIQ Genie Chat Export\n\n"
+    markdown += f"**Session ID:** {st.session_state.get('genie_session_id', 'Unknown')}\n"
+    markdown += f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    markdown += f"**Total Messages:** {len(st.session_state.genie_chat_history)}\n\n"
+    markdown += "---\n\n"
+    
+    for i, msg in enumerate(st.session_state.genie_chat_history, 1):
+        markdown += f"## Message {i}\n\n"
+        markdown += f"**Question:** {msg.get('content', '')}\n\n"
+        if msg.get('response'):
+            markdown += f"**Response:** {msg.get('response', '')}\n\n"
+        markdown += f"**Time:** {msg.get('timestamp', 'Unknown')}\n\n"
+        markdown += "---\n\n"
+    
+    return markdown
+
+
+def clear_chat_history():
+    """Clear the chat history."""
+    _initialize_chat_state()
+    st.session_state.genie_chat_history = []
+
+
+# def display_session_history_sidebar():
+#     """Display last 2 sessions in Streamlit sidebar."""
+#     _initialize_genie_session()
+#     with st.sidebar:
+#         st.markdown("---")
+#         st.subheader("Session History")
+#         if st.session_state.genie_previous_sessions:
+#             for i, session in enumerate(st.session_state.genie_previous_sessions[-2:], 1):
+#                 session_id_short = session.get('session_id', 'Unknown')[:25]
+#                 with st.expander(f"Session {i}: {session_id_short}..."):
+#                     col1, col2 = st.columns(2)
+#                     with col1:
+#                         st.metric("Queries", session.get('query_count', 0))
+#                     with col2:
+#                         topics = session.get('key_topics', [])
+#                         st.write(f"**Topics:** {', '.join(topics) if topics else 'General'}")
+#                     st.write("**Questions Asked:**")
+#                     for q in session.get('queries', [])[:3]:
+#                         st.write(f"- {q}")
+#                     if len(session.get('queries', [])) > 3:
+#                         st.text(f"... and {len(session['queries']) - 3} more")
+#         else:
+#             st.info("No previous sessions")
 
 # ---------- Dependencies Check ----------
 try:
@@ -211,7 +279,7 @@ st.set_page_config(
     layout="wide",
     page_icon=PAGE_ICON_URL,
 )
-display_session_history_sidebar()
+# display_session_history_sidebar()
 # ---------- Fabric Session ----------
 # Session object is created immediately (no network call — just builds the object).
 # All DB work is deferred until after Streamlit binds its port, so Azure's 230s
@@ -1373,6 +1441,7 @@ def load_clean_ui_light():
       height: 120px !important; max-height: 120px !important; width: auto !important;
       object-fit: contain !important;
       display: block;
+      transform: translateY(-42px);
     }
 
     /* Preset buttons (Last 30 Days / QTD / YTD / Custom) — same size, one line */
@@ -4992,9 +5061,148 @@ if st.session_state.get('page') == 'genie':
     # RIGHT COLUMN: AI Assistant
     with right_col:
         with st.container(border=True):
-            st.markdown("""
-            <div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:16px;">AI Assistant</div>
-            """, unsafe_allow_html=True)
+            # Initialize chat state
+            _initialize_chat_state()
+            
+            # Header with buttons
+            col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1], gap="small")
+            with col1:
+                st.markdown("""
+                <div style="font-size:16px;font-weight:800;color:#0f172a;">AI Assistant</div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                if st.button("Chats", key="btn_chats", use_container_width=True, help="Toggle chat history"):
+                    st.session_state.show_chat_history = not st.session_state.show_chat_history
+                    st.rerun()
+            
+            with col3:
+                if st.button("Summary", key="btn_summary", use_container_width=True, help="Generate summary"):
+                    summary = generate_chat_summary()
+                    st.session_state.chat_summary = summary
+                    st.rerun()
+            
+            with col4:
+                if st.button("Export MD", key="btn_export", use_container_width=True, help="Export as markdown"):
+                    markdown = export_chat_as_markdown()
+                    st.session_state.chat_export = markdown
+                    st.rerun()
+            
+            with col5:
+                if st.button("Clear", key="btn_clear", use_container_width=True, help="Clear chat history"):
+                    clear_chat_history()
+                    st.session_state.show_analysis = False
+                    st.session_state.analyst_response = None
+                    st.session_state.show_chat_history = False
+                    st.rerun()
+            
+            # Display summary if generated
+            if "chat_summary" in st.session_state and st.session_state.chat_summary:
+                st.markdown("---")
+                st.markdown(st.session_state.chat_summary)
+                if st.button("Close Summary", key="close_summary"):
+                    st.session_state.chat_summary = None
+                    st.rerun()
+                st.markdown("---")
+            
+            # Display export if generated
+            if "chat_export" in st.session_state and st.session_state.chat_export:
+                st.markdown("---")
+                st.markdown("### Export Chat History")
+                st.text_area("Copy the markdown below:", value=st.session_state.chat_export, height=300, disabled=True)
+                if st.button("Close Export", key="close_export"):
+                    st.session_state.chat_export = None
+                    st.rerun()
+                st.markdown("---")
+            
+            # Display chat history if toggled
+            if st.session_state.show_chat_history:
+                st.divider()
+                st.markdown("""
+                <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:4px;">Resume a previous conversation</div>
+                <div style="font-size:12px;color:#64748b;margin-bottom:14px;">You have chats from the last 7 days. Pick one to continue, or start fresh.</div>
+                """, unsafe_allow_html=True)
+                
+                if st.session_state.genie_chat_history and len(st.session_state.genie_chat_history) > 0:
+                    # Group chats by date for session management
+                    from datetime import datetime as dt_module, timedelta
+                    
+                    # Create sessions from chat history - group consecutive chats as one session
+                    sessions = []
+                    if st.session_state.genie_chat_history:
+                        # Group by significant time gaps (e.g., > 30 mins apart)
+                        current_session = []
+                        last_time = None
+                        
+                        for chat in st.session_state.genie_chat_history:
+                            try:
+                                chat_time = dt_module.fromisoformat(chat.get('timestamp', dt_module.now().isoformat()))
+                            except:
+                                chat_time = dt_module.now()
+                            
+                            if last_time and (chat_time - last_time).total_seconds() > 1800:  # 30 min gap
+                                if current_session:
+                                    sessions.append(current_session)
+                                current_session = [chat]
+                            else:
+                                current_session.append(chat)
+                            
+                            last_time = chat_time
+                        
+                        if current_session:
+                            sessions.append(current_session)
+                    
+                    # Display sessions with resume buttons (most recent first)
+                    for session_idx, session in enumerate(reversed(sessions)):
+                        if not session:
+                            continue
+                        
+                        first_chat = session[0]
+                        try:
+                            chat_time = dt_module.fromisoformat(first_chat.get('timestamp', dt_module.now().isoformat()))
+                        except:
+                            chat_time = dt_module.now()
+                        
+                        time_ago = dt_module.now() - chat_time
+                        
+                        # Format time ago string
+                        if time_ago.days == 0:
+                            hours = time_ago.seconds // 3600
+                            minutes = (time_ago.seconds % 3600) // 60
+                            if hours > 0:
+                                time_str = f"{hours}h ago"
+                            else:
+                                time_str = f"{minutes}m ago"
+                        elif time_ago.days == 1:
+                            time_str = "1d ago"
+                        else:
+                            time_str = f"{time_ago.days}d ago"
+                        
+                        # Display session info with resume button inline
+                        session_col1, session_col2 = st.columns([4, 1])
+                        
+                        with session_col1:
+                            st.markdown(f"""
+                            <div style="background:#f0f4f8;border:1px solid #cbd5e1;border-radius:8px;padding:10px 12px;">
+                                <div style="font-size:13px;font-weight:600;color:#1e293b;">Chat on {chat_time.strftime('%b %d %H:%M')}</div>
+                                <div style="font-size:11px;color:#64748b;margin-top:2px;">{len(session)} message{'s' if len(session) > 1 else ''} · {time_str}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        
+                        with session_col2:
+                            if st.button("Resume", key=f"resume_chat_{session_idx}", use_container_width=True):
+                                # Set the last question as the current query
+                                if session:
+                                    st.session_state.last_custom_query = session[-1].get('content', '')
+                                    st.session_state.selected_analysis = "custom"
+                                    st.session_state.show_analysis = True
+                                    st.session_state.show_chat_history = False
+                                    st.rerun()
+                else:
+                    st.info("No chat history yet. Start asking questions!")
+                
+                st.divider()
+
             
             # Chat area
             if st.session_state.show_analysis and st.session_state.analyst_response:
@@ -5004,8 +5212,18 @@ if st.session_state.get('page') == 'genie':
 
                 # Quick-analysis layout (screenshot-style): Key Insights, charts, Explore Further
                 if response.get("layout") == "quick":
-                    # Controls row: Back (left) + Save insight pinned to right
-                    c_back, c_spacer, c_save = st.columns([1, 5, 1])
+                    # Controls row: Back (left) + Resume/Save insight pinned to right
+                    _initialize_chat_state()
+                    if len(st.session_state.genie_chat_history) > 1:
+                        # Show Resume button when there are previous chats
+                        c_back, c_spacer, c_resume, c_save = st.columns([1, 3, 1, 1])
+                        with c_resume:
+                            if st.button("Resume", key="resume_btn", help="Resume previous chats"):
+                                st.session_state.show_chat_history = True
+                                st.rerun()
+                    else:
+                        c_back, c_spacer, c_save = st.columns([1, 5, 1])
+                    
                     with c_back:
                         if st.button("Reset", key="back_btn"):
                             st.session_state.show_analysis = False
@@ -5169,8 +5387,18 @@ if st.session_state.get('page') == 'genie':
                     # (Removed) Explore Further — not wired up yet
                     st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
                 else:
-                    # Cortex-based results (custom query or legacy) — Back left, Save pinned right
-                    c_back, c_spacer, c_save = st.columns([1, 5, 1])
+                    # Cortex-based results (custom query or legacy) — Back left, Resume, Save pinned right
+                    _initialize_chat_state()
+                    if len(st.session_state.genie_chat_history) > 1:
+                        # Show Resume button when there are previous chats
+                        c_back, c_spacer, c_resume, c_save = st.columns([1, 3, 1, 1])
+                        with c_resume:
+                            if st.button("Resume", key="resume_btn_cortex", help="Resume previous chats"):
+                                st.session_state.show_chat_history = True
+                                st.rerun()
+                    else:
+                        c_back, c_spacer, c_save = st.columns([1, 5, 1])
+                    
                     with c_back:
                         if st.button("Reset", key="back_btn"):
                             st.session_state.show_analysis = False
@@ -5403,6 +5631,91 @@ ORDER BY Sort_Order;
                                         with st.expander("View SQL used"):
                                             st.code(sql, language="sql")
             else:
+                # Show previous chat sessions if available
+                _initialize_chat_state()
+                if st.session_state.genie_chat_history and len(st.session_state.genie_chat_history) > 0:
+                    st.markdown("""
+                    <div style="margin-bottom:24px;">
+                        <div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:4px;">Resume a previous conversation</div>
+                        <div style="font-size:12px;color:#64748b;margin-bottom:14px;">You have chats from the last 7 days. Pick one to continue, or start fresh.</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    from datetime import datetime as dt_module, timedelta
+                    
+                    # Group chats by time gaps
+                    sessions = []
+                    current_session = []
+                    last_time = None
+                    
+                    for chat in st.session_state.genie_chat_history:
+                        try:
+                            chat_time = dt_module.fromisoformat(chat.get('timestamp', dt_module.now().isoformat()))
+                        except:
+                            chat_time = dt_module.now()
+                        
+                        if last_time and (chat_time - last_time).total_seconds() > 1800:  # 30 min gap
+                            if current_session:
+                                sessions.append(current_session)
+                            current_session = [chat]
+                        else:
+                            current_session.append(chat)
+                        
+                        last_time = chat_time
+                    
+                    if current_session:
+                        sessions.append(current_session)
+                    
+                    # Display sessions with resume buttons (most recent first)
+                    for session_idx, session in enumerate(reversed(sessions)):
+                        if not session:
+                            continue
+                        
+                        first_chat = session[0]
+                        try:
+                            chat_time = dt_module.fromisoformat(first_chat.get('timestamp', dt_module.now().isoformat()))
+                        except:
+                            chat_time = dt_module.now()
+                        
+                        time_ago = dt_module.now() - chat_time
+                        
+                        # Format time ago string
+                        if time_ago.days == 0:
+                            hours = time_ago.seconds // 3600
+                            minutes = (time_ago.seconds % 3600) // 60
+                            if hours > 0:
+                                time_str = f"{hours}h ago"
+                            else:
+                                time_str = f"{minutes}m ago"
+                        elif time_ago.days == 1:
+                            time_str = "1d ago"
+                        else:
+                            time_str = f"{time_ago.days}d ago"
+                        
+                        # Display session info with resume button inline
+                        session_col1, session_col2 = st.columns([4, 1])
+                        
+                        with session_col1:
+                            st.markdown(f"""
+                            <div style="background:#f0f4f8;border:1px solid #cbd5e1;border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+                                <div style="font-size:13px;font-weight:600;color:#1e293b;">Chat on {chat_time.strftime('%b %d %H:%M')}</div>
+                                <div style="font-size:11px;color:#64748b;margin-top:2px;">{len(session)} message{'s' if len(session) > 1 else ''} · {time_str}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        
+                        with session_col2:
+                                if st.button("Resume", key=f"resume_main_{session_idx}", use_container_width=True):
+                                    # Restore this session as the active chat
+                                    st.session_state.active_chat_session = session.copy()
+                                    st.session_state.last_custom_query = session[-1].get('content', '') if session else ''
+                                    st.session_state.selected_analysis = "custom"
+                                    st.session_state.show_analysis = True
+                                    # Optionally, set genie_chat_history to this session only
+                                    st.session_state.genie_chat_history = session.copy()
+                                    st.rerun()
+                    
+                    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+                
                 # Empty state - Start a Conversation (light blue-purple circle, white +, per screenshot)
                 st.markdown("""
                 <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -5457,4 +5770,15 @@ ORDER BY Sort_Order;
                             st.session_state.analyst_response = process_genie_query(user_query)
                     else:
                         st.session_state.analyst_response = process_genie_query(user_query)
+                    
+                    # Add to chat history
+                    response_summary = "Analysis completed"
+                    if st.session_state.analyst_response:
+                        if isinstance(st.session_state.analyst_response, dict):
+                            if st.session_state.analyst_response.get("message"):
+                                response_summary = str(st.session_state.analyst_response.get("message", ""))[:200]
+                            elif st.session_state.analyst_response.get("layout") == "quick":
+                                response_summary = "Quick analysis completed"
+                    add_to_chat_history(user_query.strip(), response_summary)
+                
                 st.rerun()
