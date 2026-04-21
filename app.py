@@ -371,6 +371,29 @@ def _sql_escape(s: str) -> str:
     """Escape single quotes for SQL string literal."""
     return (s or "").replace("'", "''")
 
+def _extract_sql_metadata(sql_text: str) -> tuple[str, str]:
+    """Extract table names and WHERE clause snippet from SQL."""
+    if not sql_text:
+        return "", ""
+
+    tables = []
+    for match in re.findall(r"\b(?:FROM|JOIN)\s+([A-Za-z0-9_\.\[\]]+)", sql_text, flags=re.IGNORECASE):
+        tbl = (match or "").strip()
+        if tbl and tbl not in tables:
+            tables.append(tbl)
+
+    where_match = re.search(
+        r"\bWHERE\b(.*?)(?:\bGROUP\s+BY\b|\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|$)",
+        sql_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    filters = ""
+    if where_match:
+        filters = " ".join((where_match.group(1) or "").split())
+        filters = filters[:900]
+
+    return ",".join(tables), filters
+
 
 saved_insights_TABLE = f"{Config.WAREHOUSE_SCHEMA}.{Config.SAVED_INSIGHTS_TABLE}"
 
@@ -947,15 +970,17 @@ def _get_ai_invoice_suggestion(invoice_number: str, inv_row: dict, status_histor
 
 
 def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> str:
-    """Generate prescriptive insights using Azure OpenAI."""
-
+    """Generate prescriptive insights using Azure OpenAI with middleware logging."""
+    
     start_time = time.time()
 
-    # CRITICAL FIX: Ensure session is initialized before proceeding
+    # Ensure session initialized
     if "genie_session_initialized" not in st.session_state:
         _initialize_genie_session()
-
+    
     data_parts = []
+    executed_sqls = []
+
     for block in content or []:
         if block.get("type") != "sql":
             continue
@@ -966,6 +991,8 @@ def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> 
 
         try:
             df = run_df_func(sql)
+            executed_sqls.append(sql)
+
             if df is None or df.empty:
                 continue
 
@@ -975,15 +1002,16 @@ def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> 
         except Exception as e:
             logger.warning(f"Failed to execute SQL block: {e}")
             continue
-
+    
     if not data_parts:
         return ""
-
+    
     data_str = "\n\n---\n\n".join(data_parts)
+
+    # Limit payload size
     if len(data_str) > 15000:
         data_str = data_str[:15000] + "\n(truncated)"
-
-    # FIX: Single f-string with explicit newlines (no adjacent f-strings)
+    
     prompt = (
         "You are a procurement business analyst. The user asked a question "
         "and received the following data from our analytics. "
@@ -996,64 +1024,52 @@ def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> 
         f"User question: {question}\n\n"
         f"Data:\n{data_str}"
     )
-
+    
     try:
-        # ISSUE #2 FIX: Include memory context
-        result = cortex_complete(
-            prompt,
-            temperature=0.3,
-            include_memory=True
-        )
+        result = cortex_complete(prompt, temperature=0.3, include_memory=True)
 
         duration = round(time.time() - start_time, 3)
 
         if result and len(result.strip()) > 20:
+            result_clean = result.strip()
+
+            # Save to session memory (existing logic)
             save_query_to_session_memory(
                 question,
-                "SELECT (insight)",
-                result[:200]
+                " | ".join(executed_sqls)[:500],
+                result_clean[:200]
             )
 
             # 🔥 Middleware Logging (SUCCESS)
-            log_event(
-                "AI_INSIGHT",
-                {
-                    "summary": result_clean[:200],
-                    "full_answer": result_clean,
-                    "sql": " | ".join(executed_sqls)[:1000],
-                    "relevance": 0.95,
-                    "details": f"LLM response time: {duration}s",
-                },
-            )
+            log_event("AI_INSIGHT", {
+                "summary": result_clean[:200],
+                "full_answer": result_clean,
+                "sql": " | ".join(executed_sqls)[:1000],
+                "relevance": 0.95,
+                "details": f"LLM response time: {duration}s"
+            })
 
             return result_clean
 
         # 🔹 Edge case: empty/weak response
-        log_event(
-            "AI_EMPTY",
-            {
-                "summary": "LLM returned empty/weak response",
-                "details": f"Time: {duration}s",
-                "relevance": 0.2,
-            },
-        )
+        log_event("AI_EMPTY", {
+            "summary": "LLM returned empty/weak response",
+            "details": f"Time: {duration}s",
+            "relevance": 0.2
+        })
 
     except Exception as e:
         duration = round(time.time() - start_time, 3)
 
         # 🔥 Middleware Logging (ERROR)
-        log_event(
-            "AI_ERROR",
-            {
-                "summary": "LLM failed",
-                "details": f"{str(e)} | Time: {duration}s",
-                "relevance": 0.0,
-            },
-        )
+        log_event("AI_ERROR", {
+            "summary": "LLM failed",
+            "details": f"{str(e)} | Time: {duration}s",
+            "relevance": 0.0
+        })
 
-    except Exception as e:
         logger.error(f"Prescriptive insights failed: {e}")
-
+    
     return ""
 
 def _generate_prescriptive_from_data(content: list, run_df_func) -> str:
@@ -4867,7 +4883,7 @@ if st.session_state.get('page') == 'genie':
                         ]
                         if text_parts:
                             result_full_answer = "\n\n".join([x for x in text_parts if x])
-                            result_summary = result_full_answer[:200]
+                            result_summary = result_full_answer[:]
 
                     if sql_statements:
                         sql_block_count = len(sql_statements)

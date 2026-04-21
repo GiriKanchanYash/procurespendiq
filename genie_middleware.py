@@ -36,11 +36,88 @@ def generate_context_hash(question: str, user: str):
     raw = f"{user}:{question.strip().lower()}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
+# -------------------------------
+# Middleware Logger (Insert)
+# -------------------------------
+def log_event(event_type: str, payload: dict):
+    try:
+        ctx = get_log_context()
+
+        question = payload.get("question") or ctx.get("question", "")
+        session_id = payload.get("session_id") or ctx.get("session_id", "unknown")
+        user = payload.get("user") or ctx.get("user", "UNKNOWN")
+
+        context_hash = generate_context_hash(question, user)
+
+        sql_query = _sql_escape(payload.get("sql", ""))
+        summary = _sql_escape(payload.get("summary", ""))
+        full = _sql_escape(payload.get("full_answer", ""))
+        tables = _sql_escape(payload.get("tables", ""))
+        filters = _sql_escape(payload.get("filters", ""))
+        details = _sql_escape(payload.get("details", ""))
+        cache_key = _sql_escape(payload.get("cache_key", ""))
+
+        relevance = payload.get("relevance", 0.0)
+
+        user_esc = _sql_escape(user)
+        question_esc = _sql_escape(question)
+
+        sql = f"""
+        INSERT INTO [{WH}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}] (
+            SessionId,
+            Username,
+            user_id,
+            Question,
+            AnswerSummary,
+            FullAnswer,
+            Context_Hash,
+            Sql_Query,
+            Tables_Used,
+            Filters_Applied,
+            Relevance_Score,
+            Usage_Count,
+            Last_Accessed_At,
+            CacheKey,
+            Frequency,
+            Action_Type,
+            Action_Details,
+            ChatDate,
+            CreatedAt,
+            UpdatedAt
+        )
+        VALUES (
+            '{session_id}',
+            '{user_esc}',
+            '{user_esc}',
+            '{question_esc}',
+            '{summary}',
+            '{full}',
+            '{context_hash}',
+            '{sql_query}',
+            '{tables}',
+            '{filters}',
+            {relevance},
+            1,
+            GETDATE(),
+            '{cache_key}',
+            1,
+            '{event_type}',
+            '{details}',
+            CAST(GETDATE() AS DATE),
+            GETDATE(),
+            GETDATE()
+        );
+        """
+
+        run_warehouse_non_query(sql)
+
+    except Exception as e:
+        logger.warning(f"[Middleware] Logging failed: {e}")
 
 # -------------------------------
 # Middleware Logger (MERGE)
 # -------------------------------
-def log_event(event_type: str, payload: dict):
+def log_events_upsert(event_type: str, payload: dict):
     try:
         ctx = get_log_context()
 
