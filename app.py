@@ -5082,12 +5082,24 @@ if st.session_state.get('page') == 'genie':
                     st.session_state.chat_summary = summary
                     st.rerun()
             
+            # with col4:
+            #     if st.button("Export MD", key="btn_export", use_container_width=True, help="Export as markdown"):
+            #         markdown = export_chat_as_markdown()
+            #         st.session_state.chat_export = markdown
+            #         st.rerun()
             with col4:
-                if st.button("Export MD", key="btn_export", use_container_width=True, help="Export as markdown"):
+    # Directly create a download button instead of a normal button
                     markdown = export_chat_as_markdown()
-                    st.session_state.chat_export = markdown
-                    st.rerun()
-            
+                    st.download_button(
+                        label="Export MD",
+                        data=markdown,
+                        file_name="chat_history.md",
+                        mime="text/markdown",
+                        key="btn_export",
+                        use_container_width=True,
+                        help="Export chat history as markdown"
+                    )
+
             with col5:
                 if st.button("Clear", key="btn_clear", use_container_width=True, help="Clear chat history"):
                     clear_chat_history()
