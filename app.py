@@ -20,6 +20,7 @@ from datetime import date, timedelta
 from datetime import date, timedelta, datetime  
 import uuid
 from typing import Optional
+from auto_suspend import inject_idle_timer
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -393,7 +394,7 @@ apply_custom_theme_picker(link_text="BG")
 
 # Auto-suspend idle session (req 14)
 # scripts/ is on sys.path (added at top of file) so this is a plain module import
-from auto_suspend import inject_idle_timer
+
 inject_idle_timer()
 
 
@@ -652,7 +653,6 @@ def _get_saved_insights_for_user(
     Return recent saved insights for the current user, optionally filtered by page.
     Uses columns available in dbo.saved_insights.
     """
-    import streamlit as st
 
     try:
         current_user = (_get_current_user_raw() or "UNKNOWN").strip()
@@ -781,7 +781,60 @@ def _get_frequent_questions_by_user(n: int = 10):
     except Exception:
         return []
 
+def _load_user_query_history() -> list:
 
+    """Fetches Normalized_query + frequency for the current user."""
+
+    try:
+
+        current_user = _get_current_user_raw() or "UNKNOWN"
+
+        user_esc = _sql_escape(current_user)
+
+        WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.HISTORY_TABLE_NAME}]"
+
+        sql = f"""
+
+            SELECT
+
+                NORMALIZED_QUERY,
+
+                FREQUENCY
+
+            FROM {WH_TBL}
+
+            WHERE UPPER(USER_NAME) = UPPER('{current_user}')
+
+            ORDER BY FREQUENCY DESC
+
+        """
+
+        df = run_warehouse_df(sql)
+
+        if df is None or df.empty:
+
+            return []
+
+        return [
+
+            {
+
+                "query": (str(row.get("NORMALIZED_QUERY") or "")).strip(),
+
+                "count": int(row.get("FREQUENCY") or 0)
+
+            }
+
+            for _, row in df.iterrows()
+
+        ]
+
+    except Exception as e:
+
+        st.warning(f"Could not load query history: {e}")
+
+        return []
+ 
 # ========== Utilities ==========
 
 def compute_range_preset(preset: str):
@@ -4989,6 +5042,9 @@ if st.session_state.get('page') == 'genie':
                     st.caption("Ask questions to see most frequent across all users.")
         # Removed stray closing div that could render as text
 
+    current_user = _get_current_user_raw() or "Unknown User"
+    user_esc = _sql_escape(current_user)
+
     # RIGHT COLUMN: AI Assistant
     with right_col:
         with st.container(border=True):
@@ -4997,11 +5053,14 @@ if st.session_state.get('page') == 'genie':
             title_col, btn1, btn2, btn3, btn4 = st.columns([3, 1.8, 1.8, 1.8, 1.8])
 
             with title_col:
-                st.markdown("""
-                <div style="font-size:16px;font-weight:800;color:#0f172a;">
-                    AI Assistant
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown(
+                    """
+                    <div style="font-size:16px;font-weight:800;color:#0f172a;">
+                        AI Assistant
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
             with btn1:
                 if st.button("Chats", use_container_width=True):
@@ -5021,7 +5080,9 @@ if st.session_state.get('page') == 'genie':
                     st.session_state.analyst_response = None
                     st.rerun()
 
-            st.markdown("""
+            # Custom button styles
+            st.markdown(
+                """
                 <style>
                 /* Dark grey buttons */
                 div[data-testid="stButton"] button {
@@ -5045,9 +5106,60 @@ if st.session_state.get('page') == 'genie':
                     box-shadow: none;
                 }
                 </style>
-                """, unsafe_allow_html=True)
+                """,
+                unsafe_allow_html=True,
+            )
 
-            
+            # Recent queries header
+            st.markdown(
+                f'<div style="font-size:13px;color:#64748b;margin-bottom:8px;">'
+                f'Your recent queries — <b>{user_esc}</b></div>',
+                unsafe_allow_html=True,
+            )
+
+            # Returns list of {"query": ..., "count": ...}
+            history = _load_user_query_history()
+
+            if not history:
+                st.info("No query history found for your account.")
+            else:
+                # Searchable filter
+                search = st.text_input(
+                    "Filter queries",
+                    placeholder="Type to search…",
+                    label_visibility="collapsed",
+                )
+
+                filtered = [
+                    item for item in history
+                    if not search or search.lower() in item["query"].lower()
+                ]
+
+                # Render each query as a clickable chat-style bubble
+                for item in filtered:
+                    query_text = item["query"]
+                    freq = item["count"]
+
+                    col_a, col_b = st.columns([8, 1])
+                    with col_a:
+                        if st.button(
+                            f"🔍 {query_text[:80]}{'…' if len(query_text) > 80 else ''}",
+                            key=f"qhist_{hash(query_text)}",
+                            use_container_width=True,
+                        ):
+                            st.session_state["prefilled_question"] = query_text
+
+                    with col_b:
+                        st.markdown(
+                            f'<div style="text-align:right;font-size:11px;'
+                            f'color:#94a3b8;padding-top:6px;">{freq}×</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                st.caption(f"Showing {len(filtered)} queries")
+
+            st.divider()
+
             # Chat area
             if st.session_state.show_analysis and st.session_state.analyst_response:
                 response = st.session_state.analyst_response
