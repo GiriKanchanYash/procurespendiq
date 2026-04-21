@@ -12,18 +12,27 @@ Enhancements over the original:
 """
 
 from __future__ import annotations
-
 import hashlib
 import json
 import logging
 from typing import Optional
-
+import time
 import pandas as pd
 import pyodbc
 
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_log_event(event_type: str, payload: dict) -> None:
+    """Avoid circular imports by importing Genie logging lazily."""
+    try:
+        from genie_middleware import log_event
+
+        log_event(event_type, payload)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -205,14 +214,13 @@ def _cache_key(question: str) -> str:
 def cache_get(question: str) -> Optional[dict]:
     """
     Return cached entry for the given question if it exists and has not expired.
-
-    Returns a dict with keys: ``sql``, ``result_json``, ``row_count``
-    or None when there is no valid cache entry.
     """
     if not Config.CACHE_ENABLED:
         return None
 
+    start_time = time.time()
     key = _cache_key(question)
+
     try:
         df = run_warehouse_df(f"""
             SELECT GENERATED_SQL, RESULT_JSON, ROW_COUNT
@@ -220,7 +228,14 @@ def cache_get(question: str) -> Optional[dict]:
             WHERE  CACHE_KEY = '{key}'
               AND  EXPIRES_AT > CONVERT(VARCHAR(30), GETDATE(), 120)
         """)
+
         if df.empty:
+            # 🔹 Log cache miss
+            _safe_log_event("CACHE_MISS", {
+                "summary": "Cache miss",
+                "cache_key": key,
+                "relevance": 0.2
+            })
             return None
 
         # Increment hit counter (best-effort)
@@ -234,19 +249,44 @@ def cache_get(question: str) -> Optional[dict]:
             pass
 
         row = df.iloc[0]
-        # Fabric Warehouse returns column names in uppercase
+
         def _get(r, *names):
             for n in names:
                 v = r.get(n)
                 if v is not None:
                     return v
             return None
-        return {
+
+        result = {
             "sql":         _get(row, "GENERATED_SQL", "generated_sql") or "",
             "result_json": _get(row, "RESULT_JSON",   "result_json")   or "[]",
             "row_count":   int(_get(row, "ROW_COUNT", "row_count") or 0),
         }
+
+        duration = round(time.time() - start_time, 3)
+
+        # 🔹 Log cache hit
+        _safe_log_event("CACHE_HIT", {
+            "summary": f"{result['row_count']} rows (cache) in {duration}s",
+            "sql": result["sql"],
+            "cache_key": key,
+            "relevance": 1.0,
+            "details": f"Cache retrieval time: {duration}s"
+        })
+
+        return result
+
     except Exception as exc:
+        duration = round(time.time() - start_time, 3)
+
+        # 🔹 Log cache error
+        _safe_log_event("CACHE_ERROR", {
+            "summary": "Cache lookup failed",
+            "details": f"{str(exc)} | Time: {duration}s",
+            "cache_key": key,
+            "relevance": 0.0
+        })
+
         logger.debug("Cache lookup failed: %s", exc)
         return None
 

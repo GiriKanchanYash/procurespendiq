@@ -16,11 +16,12 @@ import logging
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from datetime import date, timedelta, datetime  
 import uuid
 from typing import Optional
 from auto_suspend import inject_idle_timer
+from genie_middleware import set_log_context, log_event
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -947,35 +948,41 @@ def _get_ai_invoice_suggestion(invoice_number: str, inv_row: dict, status_histor
 
 def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> str:
     """Generate prescriptive insights using Azure OpenAI."""
-    
+
+    start_time = time.time()
+
     # CRITICAL FIX: Ensure session is initialized before proceeding
     if "genie_session_initialized" not in st.session_state:
         _initialize_genie_session()
-    
+
     data_parts = []
     for block in content or []:
         if block.get("type") != "sql":
             continue
+
         sql = block.get("statement", "")
         if not sql.strip():
             continue
+
         try:
             df = run_df_func(sql)
             if df is None or df.empty:
                 continue
+
             head = df.head(40)
             data_parts.append(head.to_string(index=False, max_colwidth=40))
+
         except Exception as e:
             logger.warning(f"Failed to execute SQL block: {e}")
             continue
-    
+
     if not data_parts:
         return ""
-    
+
     data_str = "\n\n---\n\n".join(data_parts)
     if len(data_str) > 15000:
         data_str = data_str[:15000] + "\n(truncated)"
-    
+
     # FIX: Single f-string with explicit newlines (no adjacent f-strings)
     prompt = (
         "You are a procurement business analyst. The user asked a question "
@@ -989,16 +996,64 @@ def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> 
         f"User question: {question}\n\n"
         f"Data:\n{data_str}"
     )
-    
+
     try:
         # ISSUE #2 FIX: Include memory context
-        result = cortex_complete(prompt, temperature=0.3, include_memory=True)
+        result = cortex_complete(
+            prompt,
+            temperature=0.3,
+            include_memory=True
+        )
+
+        duration = round(time.time() - start_time, 3)
+
         if result and len(result.strip()) > 20:
-            save_query_to_session_memory(question, "SELECT (insight)", result[:200])
-            return result.strip()
+            save_query_to_session_memory(
+                question,
+                "SELECT (insight)",
+                result[:200]
+            )
+
+            # 🔥 Middleware Logging (SUCCESS)
+            log_event(
+                "AI_INSIGHT",
+                {
+                    "summary": result_clean[:200],
+                    "full_answer": result_clean,
+                    "sql": " | ".join(executed_sqls)[:1000],
+                    "relevance": 0.95,
+                    "details": f"LLM response time: {duration}s",
+                },
+            )
+
+            return result_clean
+
+        # 🔹 Edge case: empty/weak response
+        log_event(
+            "AI_EMPTY",
+            {
+                "summary": "LLM returned empty/weak response",
+                "details": f"Time: {duration}s",
+                "relevance": 0.2,
+            },
+        )
+
+    except Exception as e:
+        duration = round(time.time() - start_time, 3)
+
+        # 🔥 Middleware Logging (ERROR)
+        log_event(
+            "AI_ERROR",
+            {
+                "summary": "LLM failed",
+                "details": f"{str(e)} | Time: {duration}s",
+                "relevance": 0.0,
+            },
+        )
+
     except Exception as e:
         logger.error(f"Prescriptive insights failed: {e}")
-    
+
     return ""
 
 def _generate_prescriptive_from_data(content: list, run_df_func) -> str:
@@ -4756,6 +4811,10 @@ if st.session_state.get('page') == 'genie':
     
     def process_genie_query(query: str, analysis_type: str = "custom"):
         """Process a query, store response in recent analyses, return response."""
+        current_user = _get_current_user_raw() or "UNKNOWN"
+        session_id = st.session_state.get("genie_session_id", "unknown")
+        set_log_context(question=query, user=current_user, session_id=session_id)
+
         # Add user message
         st.session_state.genie_messages.append({
             "role": "user",
@@ -4779,33 +4838,91 @@ if st.session_state.get('page') == 'genie':
         _append_genie_question(query, analysis_type)
         
         #CACHE THE RESULT - Save to QUERY_RESULT_CACHE warehouse table
+        cache_key_for_log = ""
         try:
-            if isinstance(response, dict) and 'message' in response:
-                # Extract SQL from response structure
-                result_sql = ''
+            # Extract complete middleware payload for memory logging.
+            result_sql = ""
+            result_summary = ""
+            result_full_answer = ""
+            tables_used = ""
+            filters_applied = ""
+            details = f"analysis_type={analysis_type}"
+            sql_block_count = 0
+
+            if isinstance(response, dict) and "message" in response:
                 try:
-                    content = response.get('message', {}).get('content', [])
+                    content = response.get("message", {}).get("content", [])
+                    sql_statements = []
                     if content and isinstance(content, list):
-                        # First item should be the SQL statement
                         for item in content:
-                            if isinstance(item, dict) and item.get('type') == 'sql':
-                                result_sql = item.get('statement', '')
-                                break
+                            if isinstance(item, dict) and item.get("type") == "sql":
+                                statement = str(item.get("statement", "")).strip()
+                                if statement:
+                                    sql_statements.append(statement)
+
+                        text_parts = [
+                            str(item.get("text", "")).strip()
+                            for item in content
+                            if isinstance(item, dict) and item.get("type") == "text"
+                        ]
+                        if text_parts:
+                            result_full_answer = "\n\n".join([x for x in text_parts if x])
+                            result_summary = result_full_answer[:200]
+
+                    if sql_statements:
+                        sql_block_count = len(sql_statements)
+                        result_sql = "\n\n-- NEXT BLOCK --\n\n".join(sql_statements)
+                        tables_set = []
+                        filter_parts = []
+                        for statement in sql_statements:
+                            stmt_tables, stmt_filters = _extract_sql_metadata(statement)
+                            if stmt_tables:
+                                for tbl in stmt_tables.split(","):
+                                    t = tbl.strip()
+                                    if t and t not in tables_set:
+                                        tables_set.append(t)
+                            if stmt_filters:
+                                filter_parts.append(stmt_filters)
+                        tables_used = ",".join(tables_set)
+                        filters_applied = " || ".join(filter_parts)[:900]
                 except Exception:
                     pass
-                
-                # Re-execute the query to get the dataframe for caching
-                if result_sql:
-                    try:
-                        result_df = run_df(result_sql)
-                        cache_set(
-                            question=query,
-                            sql=result_sql,
-                            result_df=result_df
-                        )
-                        logger.info(f"✓ Cached result for: {query[:60]}")
-                    except Exception as cache_error:
-                        logger.warning(f"Could not cache results: {cache_error}")
+
+            # Re-execute first SQL statement (if any) to keep cache behavior.
+            first_sql = result_sql.split("\n\n-- NEXT BLOCK --\n\n", 1)[0] if result_sql else ""
+            if first_sql:
+                try:
+                    result_df = run_df(first_sql)
+                    cache_set(
+                        question=query,
+                        sql=first_sql,
+                        result_df=result_df
+                    )
+                    cache_key_for_log = f"genie:{hash(query.strip().lower())}"
+                    logger.info(f"✓ Cached result for: {query[:60]}")
+                except Exception as cache_error:
+                    logger.warning(f"Could not cache results: {cache_error}")
+
+            # Ensure every Genie question is persisted to contextual memory.
+            if not result_summary and query:
+                result_summary = query[:200]
+            if not result_full_answer and isinstance(response, dict):
+                result_full_answer = str(response)[:4000]
+            details = (
+                f"{details}; has_message={bool(isinstance(response, dict) and 'message' in response)}; "
+                f"sql_blocks={sql_block_count}"
+            )
+
+            log_event("GENIE_QUERY", {
+                "summary": result_summary,
+                "full_answer": result_full_answer,
+                "sql": result_sql,
+                "tables": tables_used,
+                "filters": filters_applied,
+                "details": details,
+                "cache_key": cache_key_for_log,
+                "relevance": 0.9 if result_sql else 0.5,
+            })
         except Exception as outer_error:
             logger.warning(f"Cache operation failed: {outer_error}")
 
