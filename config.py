@@ -252,6 +252,43 @@ class Config:
     HISTORY_TABLE_NAME: str    = _naming.get("history_table", "GENIE_QUESTION_HISTORY")
     SAVED_INSIGHTS_TABLE: str  = _naming.get("saved_insights_table", "SAVED_INSIGHTS")
     CACHE_TABLE_NAME: str      = _naming.get("cache_table", "QUERY_RESULT_CACHE")
+    GENIE_CONTEXT_MEMORY_TABLE: str = _naming.get("genie_context_memory_table", "GENIE_CONTEXT_MEMORY")
+
+    # ------------------------------------------------------------------
+    # Genie Contextual Memory Configuration
+    # ------------------------------------------------------------------
+
+    _memory = _settings.get("memory", {})
+
+    SHORT_TERM_MEMORY_ENABLED: bool = (
+        _memory.get("short_term", {}).get("enabled", True)
+    )
+
+    SHORT_TERM_MEMORY_MAX_MESSAGES: int = (
+        _memory.get("short_term", {}).get("max_messages", 10)
+    )
+
+    SHORT_TERM_MEMORY_WINDOW_MINUTES: int = (
+        _memory.get("short_term", {}).get("window_minutes", 15)
+    )
+
+    LONG_TERM_MEMORY_ENABLED: bool = (
+        _memory.get("long_term", {}).get("enabled", True)
+    )
+
+    LONG_TERM_MEMORY_MAX_CONTEXTS: int = (
+        _memory.get("long_term", {}).get("max_contexts", 5000)
+    )
+
+    LONG_TERM_MEMORY_TABLE: str = (
+        _memory.get("long_term", {}).get(
+            "table", "genie_context_memory"
+        )
+    )
+
+    GENIE_CONTEXT_WINDOW_SIZE: int = (
+        _memory.get("genie", {}).get("context_window_size", 5)
+    )
 
     # ------------------------------------------------------------------
     # Validation
