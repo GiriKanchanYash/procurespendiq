@@ -116,6 +116,7 @@ def archive_session_to_longterm_memory(session_summary: str = ""):
         "key_topics": _extract_key_topics(st.session_state.genie_queries)
     }
     st.session_state.genie_previous_sessions.append(session_obj)
+    print(f"Initialized new Genie session: {st.session_state}")
     if len(st.session_state.genie_previous_sessions) > 2:
         st.session_state.genie_previous_sessions = st.session_state.genie_previous_sessions[-2:]
     logger.info(f"Session {st.session_state.genie_session_id} archived to long-term memory")
@@ -142,6 +143,7 @@ def get_session_context_for_prompt() -> str:
         for q in st.session_state.genie_queries[-3:]:
             context += f"- {q['question']}\n"
         context += "\n---\n\n"
+    print(f"Initialized new Genie session: {st.session_state}")
     return context
 
 
@@ -167,40 +169,6 @@ def _extract_key_topics(queries: list) -> list:
                 topics.add(topic)
     return list(topics)[:3]
 
-
-def display_session_history_sidebar():
-    """Display last 2 sessions in Streamlit sidebar."""
-    _initialize_genie_session()
-    with st.sidebar:
-        st.markdown("---")
-        st.subheader("Session History")
-        if st.session_state.genie_previous_sessions:
-            for i, session in enumerate(st.session_state.genie_previous_sessions[-2:], 1):
-                session_id_short = session.get('session_id', 'Unknown')[:25]
-                with st.expander(f"Session {i}: {session_id_short}..."):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Queries", session.get('query_count', 0))
-                    with col2:
-                        topics = session.get('key_topics', [])
-                        st.write(f"**Topics:** {', '.join(topics) if topics else 'General'}")
-                    st.write("**Questions Asked:**")
-                    for q in session.get('queries', [])[:3]:
-                        st.write(f"- {q}")
-                    if len(session.get('queries', [])) > 3:
-                        st.text(f"... and {len(session['queries']) - 3} more")
-        else:
-            st.info("No previous sessions")
-
-# ---------- Dependencies Check ----------
-try:
-    import streamlit as st
-    import pandas as pd
-    import altair as alt
-    import numpy as np
-except ImportError as e:
-    st.error(f"Missing dependency: {e}. Please install required packages: streamlit, pandas, altair, numpy, Fabric-snowpark-python")
-    st.stop()
 
 # ---------- Page Config ----------
 # NOTE: Replace PAGE_ICON_URL with a transparent‑background YASH logo
@@ -595,7 +563,6 @@ def _save_insight(
     Uses only the columns present in your table:
       QUESTION, TITLE, ANALYSIS_TYPE, CREATED_BY, CREATED_AT (date), PAGE
     """
-    import streamlit as st
 
     q = (question or "").strip()
     t = (title or "").strip()
@@ -731,7 +698,6 @@ def _get_frequent_questions(n: int = 10):
     except Exception as e:
         # Optional: surface the SQL to debug quickly
         try:
-            import streamlit as st
             st.error(f"Load frequent questions failed: {e}")
             st.code(sql, language="sql")
         except Exception:
