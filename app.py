@@ -4651,6 +4651,10 @@ if st.session_state.get('page') == 'genie':
         st.session_state.sidebar_expanded = True
     if "genie_input_version" not in st.session_state:
         st.session_state.genie_input_version = 0
+    if "query_filter_days" not in st.session_state:
+        st.session_state.query_filter_days = 7
+    if "show_conversation_history" not in st.session_state:
+        st.session_state.show_conversation_history = True
 
     # Define quick analysis options - match YAML verified queries; icons as SVG (screenshot-style)
     _BAR_CHART_SVG = '''<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="14" width="4" height="6" rx="1" fill="white"/><rect x="10" y="10" width="4" height="10" rx="1" fill="white"/><rect x="16" y="6" width="4" height="14" rx="1" fill="white"/></svg>'''
@@ -5148,114 +5152,137 @@ if st.session_state.get('page') == 'genie':
     with right_col:
         with st.container(border=True):
 
-            # Header row: title + 4 buttons
-            title_col, btn1, btn2, btn3, btn4 = st.columns([3, 1.8, 1.8, 1.8, 1.8])
-
-            with title_col:
+            # Header row with title and buttons
+            header_col, btn1, btn2, btn3, btn4 = st.columns([2, 1, 1, 1, 1], gap="small")
+            
+            with header_col:
                 st.markdown(
                     """
-                    <div style="font-size:16px;font-weight:800;color:#0f172a;">
-                        AI Assistant
-                    </div>
+                    <div style="font-size: 20px; font-weight: 800; color: #0F172A; padding-top: 8px;">AI Assistant</div>
                     """,
                     unsafe_allow_html=True,
                 )
-
+            
             with btn1:
-                if st.button("Chats", use_container_width=True):
-                    st.session_state.active_mode = "chats"
-
+                if st.button("Chats", use_container_width=True, key="btn_chats"):
+                    st.session_state.show_conversation_history = True
+                    st.rerun()
             with btn2:
-                if st.button("Summarize", use_container_width=True):
-                    st.session_state.active_mode = "summarize"
-
+                st.button("Summarize", use_container_width=True, key="btn_summarize")
             with btn3:
-                if st.button("Export MD", use_container_width=True):
-                    st.session_state.active_mode = "export"
+                if st.button("Export MD", use_container_width=True, key="btn_export"):
+                    # Generate markdown from chat history
+                    history = _load_user_query_history()
+                    if history:
+                        md_content = "# Chat History\n\n"
+                        for item in history:
+                            query_text = item.get("query", "")
+                            freq = item.get("count", 0)
+                            md_content += f"## {query_text}\n"
+                            md_content += f"*Asked {freq} times*\n\n"
+                        
+                        st.download_button(
+                            label="Download Chat History",
+                            data=md_content,
+                            file_name="chat_history.md",
+                            mime="text/markdown",
+                            key="download_chat_md"
+                        )
+                    else:
+                        st.info("No chat history to export.")
 
             with btn4:
-                if st.button("Clear", use_container_width=True):
+                if st.button("Clear", use_container_width=True, key="btn_clear"):
                     st.session_state.show_analysis = False
                     st.session_state.analyst_response = None
+                    st.session_state.show_conversation_history = False
                     st.rerun()
 
-            # Custom button styles
+            st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+
+            # Blue background section
             st.markdown(
                 """
-                <style>
-                /* Dark grey buttons */
-                div[data-testid="stButton"] button {
-                    background-color: #8F8F8F;   /* light grey */
-                    color: #242424;              /* dark grey text */
-                    border: 1.5px solid #8F8F8F;
-                    border-radius: 50px;
-                    font-weight: 600;
-                    font-color: #4b5563;
-                }
-
-                /* Hover state */
-                div[data-testid="stButton"] button:hover {
-                    background-color: #C4C4C4;   /* darker grey on hover */
-                    border-color: #C4C4C4;
-                    color: #4b5563 !important;
-                }
-
-                /* Focus fix */
-                div[data-testid="stButton"] button:focus {
-                    box-shadow: none;
-                }
-                </style>
+                <div style="background-color: #EEF4FF; border-radius: 12px; padding: 20px; margin-bottom: 20px;">
+                    <h2 style="font-size: 20px; font-weight: 800; color: #0F172A; margin: 0 0 8px 0;">Resume a previous conversation</h2>
+                    <p style="font-size: 14px; color: #475569; margin: 0;">View chats from your recent activity. Pick one to continue, or ask a new question.</p>
+                </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            # Recent queries header
-            st.markdown(
-                f'<div style="font-size:13px;color:#64748b;margin-bottom:8px;">'
-                f'Your recent queries — <b>{user_esc}</b></div>',
-                unsafe_allow_html=True,
-            )
+            # Time period filter buttons
+            col1, col2, col3, col_spacer = st.columns([1, 1, 1, 3], gap="small")
+            filter_days = st.session_state.get("query_filter_days", 7)
+            
+            with col1:
+                btn_type = "primary" if filter_days == 1 else "secondary"
+                if st.button("Today", key="filter_today", use_container_width=True, type=btn_type):
+                    st.session_state.query_filter_days = 1
+                    st.rerun()
+            with col2:
+                btn_type = "primary" if filter_days == 3 else "secondary"
+                if st.button("3 days", key="filter_3days", use_container_width=True, type=btn_type):
+                    st.session_state.query_filter_days = 3
+                    st.rerun()
+            with col3:
+                btn_type = "primary" if filter_days == 7 else "secondary"
+                if st.button("7 days", key="filter_7days", use_container_width=True, type=btn_type):
+                    st.session_state.query_filter_days = 7
+                    st.rerun()
 
-            # Returns list of {"query": ..., "count": ...}
-            history = _load_user_query_history()
+            st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
-            if not history:
-                st.info("No query history found for your account.")
+            # Show conversation history or empty state
+            if st.session_state.get("show_conversation_history", True):
+                # Returns list of {"query": ..., "count": ...}
+                history = _load_user_query_history()
+
+                if not history:
+                    st.info("No query history found for your account.")
+                else:
+                    # Render each query as a card
+                    for i, item in enumerate(history[:6]):  # Show up to 6 cards
+                        query_text = item["query"]
+                        freq = item["count"]
+
+                        # Create columns for card layout - card takes most space, button on right
+                        card_col1, card_col2 = st.columns([4, 1], gap="small")
+                        
+                        with card_col1:
+                            st.markdown(
+                                f"""
+                                <div style="border: 1px solid #E5E7EB; border-radius: 10px; padding: 16px; background-color: #FFFFFF; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);">
+                                    <div style="font-size: 14px; font-weight: 700; color: #0F172A; margin-bottom: 6px;">{query_text[:60]}{'...' if len(query_text) > 60 else ''}</div>
+                                    <div style="font-size: 13px; color: #64748B;">{freq} message{'s' if freq != 1 else ''}</div>
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+                        
+                        with card_col2:
+                            if st.button("Resume", key=f"resume_query_{i}", use_container_width=True):
+                                st.session_state["prefilled_question"] = query_text
+                                st.session_state.show_analysis = True
+                                with st.spinner("Loading..."):
+                                    st.session_state.analyst_response = process_genie_query(query_text)
+                                st.rerun()
+                        
+                        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
             else:
-                # Searchable filter
-                search = st.text_input(
-                    "Filter queries",
-                    placeholder="Type to search…",
-                    label_visibility="collapsed",
+                # Empty state - Start a Conversation
+                st.markdown(
+                    """
+                    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; text-align: center;">
+                        <div style="width: 80px; height: 80px; background-color: #DBEAFE; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 20px;">
+                            <span style="font-size: 40px; color: #93C5FD;">+</span>
+                        </div>
+                        <h2 style="font-size: 20px; font-weight: 800; color: #0F172A; margin: 0 0 12px 0;">Start a Conversation</h2>
+                        <p style="font-size: 14px; color: #64748B; margin: 0; max-width: 300px;">Ask questions about your Procurement to Pay data, or select a pre-built analysis from the library.</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
-
-                filtered = [
-                    item for item in history
-                    if not search or search.lower() in item["query"].lower()
-                ]
-
-                # Render each query as a clickable chat-style bubble
-                for item in filtered:
-                    query_text = item["query"]
-                    freq = item["count"]
-
-                    col_a, col_b = st.columns([8, 1])
-                    with col_a:
-                        if st.button(
-                            f"🔍 {query_text[:80]}{'…' if len(query_text) > 80 else ''}",
-                            key=f"qhist_{hash(query_text)}",
-                            use_container_width=True,
-                        ):
-                            st.session_state["prefilled_question"] = query_text
-
-                    with col_b:
-                        st.markdown(
-                            f'<div style="text-align:right;font-size:11px;'
-                            f'color:#94a3b8;padding-top:6px;">{freq}×</div>',
-                            unsafe_allow_html=True,
-                        )
-
-                st.caption(f"Showing {len(filtered)} queries")
 
             st.divider()
 
@@ -5665,23 +5692,6 @@ ORDER BY Sort_Order;
                                         st.error(f"Query error: {e}")
                                         with st.expander("View SQL used"):
                                             st.code(sql, language="sql")
-            else:
-                # Empty state - Start a Conversation (light blue-purple circle, white +, per screenshot)
-                st.markdown("""
-                <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
-                     padding:60px 20px;text-align:center;min-height:300px;">
-                    <div style="width:64px;height:64px;border-radius:50%;background:#dbeafe;
-                         display:flex;align-items:center;justify-content:center;margin-bottom:20px;">
-                        <span style="font-size:28px;font-weight:300;color:#ffffff;">+</span>
-                    </div>
-                    <div style="font-size:18px;font-weight:800;color:#1a1a1a;margin-bottom:8px;">
-                        Start a Conversation
-                    </div>
-                    <div style="font-size:14px;color:#64748b;max-width:400px;">
-                        Ask questions about your Procurement to Pay data, or select a pre-built analysis from the library.
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
             
             # Chat Input at bottom (form so Enter key submits the question)
             st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
@@ -5702,6 +5712,7 @@ ORDER BY Sort_Order;
                 st.session_state.selected_analysis = "custom"
                 st.session_state.last_custom_query = user_query.strip()
                 st.session_state.show_analysis = True
+                st.session_state.show_conversation_history = True
                 st.session_state.genie_input_version = st.session_state.genie_input_version + 1
                 with st.spinner("Analyzing..."):
                     # Cache-first lookup (req 8): check session cache before calling AI
