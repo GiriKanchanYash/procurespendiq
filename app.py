@@ -772,57 +772,60 @@ def _get_frequent_questions_by_user(n: int = 10):
         return []
 
 def _load_user_query_history() -> list:
-
+ 
     """Fetches Normalized_query + frequency for the current user."""
-
+ 
     try:
-
+ 
         current_user = _get_current_user_raw() or "UNKNOWN"
-
+ 
         user_esc = _sql_escape(current_user)
-
-        WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.HISTORY_TABLE_NAME}]"
-
+ 
+        WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
+ 
         sql = f"""
-
-            SELECT
-
-                NORMALIZED_QUERY,
-
-                FREQUENCY
-
+           SELECT
+                [Username],
+                [Question],
+                [AnswerSummary],
+                [FullAnswer],
+                [Context_Hash],
+                [Sql_Query],
+                [Tables_Used],
+                [Filters_Applied],
+                [CacheKey],
+                [Frequency],
+                [Action_Type],
+                [Action_Details],
+                [ChatDate]
             FROM {WH_TBL}
-
-            WHERE UPPER(USER_NAME) = UPPER('{current_user}')
-
-            ORDER BY FREQUENCY DESC
-
+            WHERE UPPER(Username) = UPPER('{current_user}') AND [Action_Type] IN ('CACHE_HIT', 'GENIE_QUERY');
         """
-
+ 
         df = run_warehouse_df(sql)
-
+ 
         if df is None or df.empty:
-
+ 
             return []
-
+ 
         return [
-
+ 
             {
-
-                "query": (str(row.get("NORMALIZED_QUERY") or "")).strip(),
-
-                "count": int(row.get("FREQUENCY") or 0)
-
+ 
+                "query": (str(row.get("Question") or "")).strip(),
+ 
+                "count": int(row.get("Frequency") or 0)
+ 
             }
-
+ 
             for _, row in df.iterrows()
-
+ 
         ]
-
+ 
     except Exception as e:
-
+ 
         st.warning(f"Could not load query history: {e}")
-
+ 
         return []
  
 # ========== Utilities ==========
