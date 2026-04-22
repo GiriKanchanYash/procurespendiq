@@ -2012,6 +2012,22 @@ def load_clean_ui_light():
     .st-key-btn_download_csv button:hover {
     background-color: #1D4ED8 !important;
     }
+    /* Genie chat history resume buttons - screenshot style */
+    div[class*="st-key-resume_query_"] button {
+      background: #2563EB !important;
+      color: #FFFFFF !important;
+      border: 1px solid #1D4ED8 !important;
+      border-radius: 10px !important;
+      min-height: 42px !important;
+      font-size: 14px !important;
+      font-weight: 700 !important;
+      box-shadow: 0 1px 2px rgba(37, 99, 235, 0.20) !important;
+    }
+    div[class*="st-key-resume_query_"] button:hover {
+      background: #1D4ED8 !important;
+      border-color: #1E40AF !important;
+      color: #FFFFFF !important;
+    }
     /* Prev (Grey) */
     .st-key-inv_prev button {
         background-color: #F8FAFC !important;
@@ -5214,23 +5230,20 @@ if st.session_state.get('page') == 'genie':
                 unsafe_allow_html=True,
             )
 
-            # Time period filter buttons
-            col1, col2, col3, col_spacer = st.columns([1, 1, 1, 3], gap="small")
+            # Time period filter buttons (even width across the available row)
+            col1, col2, col3 = st.columns([1, 1, 1], gap="small")
             filter_days = st.session_state.get("query_filter_days", 7)
             
             with col1:
-                btn_type = "primary" if filter_days == 1 else "secondary"
-                if st.button("Today", key="filter_today", use_container_width=True, type=btn_type):
+                if st.button("Today", key="filter_today", use_container_width=True, type="secondary"):
                     st.session_state.query_filter_days = 1
                     st.rerun()
             with col2:
-                btn_type = "primary" if filter_days == 3 else "secondary"
-                if st.button("3 days", key="filter_3days", use_container_width=True, type=btn_type):
+                if st.button("3 days", key="filter_3days", use_container_width=True, type="secondary"):
                     st.session_state.query_filter_days = 3
                     st.rerun()
             with col3:
-                btn_type = "primary" if filter_days == 7 else "secondary"
-                if st.button("7 days", key="filter_7days", use_container_width=True, type=btn_type):
+                if st.button("7 days", key="filter_7days", use_container_width=True, type="secondary"):
                     st.session_state.query_filter_days = 7
                     st.rerun()
 
@@ -5249,9 +5262,8 @@ if st.session_state.get('page') == 'genie':
                         query_text = item["query"]
                         freq = item["count"]
 
-                        # Create columns for card layout - card takes most space, button on right
-                        card_col1, card_col2 = st.columns([4, 1], gap="small")
-                        
+                        # Screenshot-style layout: card left, blue resume button on right
+                        card_col1, card_col2 = st.columns([4.4, 1.6], gap="small")
                         with card_col1:
                             st.markdown(
                                 f"""
@@ -5262,9 +5274,9 @@ if st.session_state.get('page') == 'genie':
                                 """,
                                 unsafe_allow_html=True,
                             )
-                        
                         with card_col2:
-                            if st.button("Resume", key=f"resume_query_{i}", use_container_width=True):
+                            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+                            if st.button("Resume", key=f"resume_query_{i}", use_container_width=True, type="primary"):
                                 st.session_state["prefilled_question"] = query_text
                                 st.session_state.show_analysis = True
                                 with st.spinner("Loading..."):
@@ -5287,7 +5299,7 @@ if st.session_state.get('page') == 'genie':
                     unsafe_allow_html=True,
                 )
 
-            st.divider()
+            st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
 
             # Chat area
             if st.session_state.show_analysis and st.session_state.analyst_response:
