@@ -4,7 +4,7 @@ import streamlit as st
 import hashlib
 import logging
 from datetime import datetime
-from db_service import run_warehouse_non_query
+from db_service import run_warehouse_non_query,run_warehouse_df
 
 logger = logging.getLogger(__name__)
 from config import Config
@@ -37,7 +37,7 @@ def generate_context_hash(question: str, user: str):
     return hashlib.sha256(raw.encode()).hexdigest()
 
 # -------------------------------
-# Middleware Logger (Insert)
+# Middleware Logger (Insert and Update Frequency)
 # -------------------------------
 def log_event(event_type: str, payload: dict):
     try:
@@ -61,6 +61,10 @@ def log_event(event_type: str, payload: dict):
 
         user_esc = _sql_escape(user)
         question_esc = _sql_escape(question)
+
+        #get existing frequency
+        existing_frequency = get_existing_question_frequency(question_esc, user_esc)
+        new_frequency = existing_frequency + 1
 
         sql = f"""
         INSERT INTO [{WH}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}] (
@@ -100,7 +104,7 @@ def log_event(event_type: str, payload: dict):
             1,
             GETDATE(),
             '{cache_key}',
-            1,
+            {new_frequency},
             '{event_type}',
             '{details}',
             CAST(GETDATE() AS DATE),
@@ -111,8 +115,49 @@ def log_event(event_type: str, payload: dict):
 
         run_warehouse_non_query(sql)
 
+        
+        update_frequency = f"""
+        UPDATE [{WH}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]
+        SET
+            Frequency = {new_frequency},
+            Last_Accessed_At = GETDATE(),
+            UpdatedAt = GETDATE()
+        WHERE [Question] = '{question}'
+        AND Username = '{user_esc}';
+        """
+
+        run_warehouse_non_query(update_frequency)
+
     except Exception as e:
         logger.warning(f"[Middleware] Logging failed: {e}")
+
+
+def get_existing_question_frequency(question: str, user: str) -> int:
+    try:
+        sql = f"""
+        SELECT ISNULL(MAX(Frequency), 0) AS maxFrequency
+        FROM [{WH}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]
+        WHERE Question = '{question}'
+          AND Username = '{user}'
+        """
+
+        result = run_warehouse_df(sql)
+        print(f"Frequency query result:\n{result}")
+
+        # ✅ Proper DataFrame emptiness check
+        if result is None or result.empty:
+            return 0
+
+        # ✅ Safe value extraction
+        max_freq = result.iloc[0]["maxFrequency"]
+        print(f"Existing frequency result: {max_freq}")
+
+        return int(max_freq) if max_freq is not None else 0
+
+    except Exception as e:
+        logger.warning(f"[Middleware] Fetch existing frequency failed: {e}")
+        return 0
+
 
 # -------------------------------
 # Middleware Logger (MERGE)
