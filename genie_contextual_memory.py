@@ -61,6 +61,11 @@ class ContextualMemoryManager:
     # =========================================================================
     # SHORT-TERM MEMORY (Session-Based)
     # =========================================================================
+
+
+    @property
+    def _ltm_table(self) -> str:
+        return f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
     
     def initialize_session_memory(self) -> None:
         """Initialize short-term memory structures in session_state."""
@@ -195,50 +200,6 @@ class ContextualMemoryManager:
     # LONG-TERM MEMORY (Database-Based)
     # =========================================================================
     
-    def ensure_long_term_memory_table(self) -> bool:
-        """
-        Create long-term memory table if it doesn't exist.
-        
-        Returns:
-            True if table exists or was created successfully
-        """
-        if not Config.LONG_TERM_MEMORY_ENABLED:
-            return False
-        
-        try:
-            create_table_sql = f"""
-            IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'genie_context_memory')
-            BEGIN
-                CREATE TABLE {Config.LONG_TERM_MEMORY_TABLE} (
-                    context_id INT PRIMARY KEY IDENTITY(1,1),
-                    user_id NVARCHAR(255),
-                    session_id NVARCHAR(255),
-                    context_hash NVARCHAR(64) UNIQUE,
-                    question NVARCHAR(2000),
-                    answer NVARCHAR(MAX),
-                    sql_query NVARCHAR(MAX),
-                    tables_used NVARCHAR(1000),
-                    filters_applied NVARCHAR(1000),
-                    result_summary NVARCHAR(2000),
-                    relevance_score FLOAT DEFAULT 0.5,
-                    usage_count INT DEFAULT 1,
-                    created_at DATETIME DEFAULT GETDATE(),
-                    updated_at DATETIME DEFAULT GETDATE(),
-                    last_accessed_at DATETIME DEFAULT GETDATE(),
-                    is_verified BIT DEFAULT 0,
-                    INDEX idx_user_session (user_id, session_id),
-                    INDEX idx_context_hash (context_hash),
-                    INDEX idx_created (created_at)
-                );
-            END
-            """
-            run_warehouse_non_query(create_table_sql)
-            logger.info("Long-term memory table ready")
-            return True
-        except Exception as e:
-            logger.error(f"Error creating long-term memory table: {e}")
-            return False
-    
     def add_to_long_term_memory(
         self,
         question: str,
@@ -276,7 +237,7 @@ class ContextualMemoryManager:
             
             # Check if context already exists
             check_sql = f"""
-            SELECT context_id FROM {Config.LONG_TERM_MEMORY_TABLE}
+            SELECT context_id FROM {self._ltm_table}
             WHERE context_hash = '{context_hash}'
             """
             try:
@@ -284,7 +245,7 @@ class ContextualMemoryManager:
                 if not existing.empty:
                     # Update usage count and last accessed
                     update_sql = f"""
-                    UPDATE {Config.LONG_TERM_MEMORY_TABLE}
+                    UPDATE {self._ltm_table}
                     SET usage_count = usage_count + 1,
                         last_accessed_at = GETDATE()
                     WHERE context_hash = '{context_hash}'
@@ -296,12 +257,33 @@ class ContextualMemoryManager:
             
             # Insert new context
             insert_sql = f"""
-            INSERT INTO {Config.LONG_TERM_MEMORY_TABLE}
-            (user_id, session_id, context_hash, question, answer, sql_query,
-             tables_used, filters_applied, is_verified)
+            INSERT INTO {self._ltm_table}
+            (
+                SessionId,
+                Username,
+                user_id,
+                Question,
+                AnswerSummary,
+                FullAnswer,
+                Context_Hash,
+                Sql_Query,
+                Tables_Used,
+                Filters_Applied,
+                Relevance_Score,
+                Usage_Count,
+                Last_Accessed_At,
+                CacheKey,
+                Frequency,
+                Action_Type,
+                Action_Details,
+                ChatDate,
+                CreatedAt,
+                UpdatedAt
+            )
             VALUES
-            ('{user_id or 'UNKNOWN'}',
-             '{session_id or 'UNKNOWN'}',
+            (
+            '{session_id or 'UNKNOWN'}',
+            '{user_id or 'UNKNOWN'}',
              '{context_hash}',
              {self._escape_sql_string(question)},
              {self._escape_sql_string(answer)},
@@ -350,7 +332,7 @@ class ContextualMemoryManager:
                 usage_count,
                 relevance_score,
                 is_verified
-            FROM {Config.LONG_TERM_MEMORY_TABLE}
+            FROM {self._ltm_table}
             ORDER BY
                 is_verified DESC,
                 usage_count DESC,
@@ -421,14 +403,14 @@ class ContextualMemoryManager:
         
         try:
             delete_sql = f"""
-            DELETE FROM {Config.LONG_TERM_MEMORY_TABLE}
+            DELETE FROM {self._ltm_table}
             WHERE created_at < DATEADD(day, -{days_old}, GETDATE())
             AND usage_count < 2
             """
             
             # For tracking deleted count
             count_sql = f"""
-            SELECT COUNT(*) as cnt FROM {Config.LONG_TERM_MEMORY_TABLE}
+            SELECT COUNT(*) as cnt FROM {self._ltm_table}
             WHERE created_at < DATEADD(day, -{days_old}, GETDATE())
             AND usage_count < 2
             """
@@ -474,7 +456,7 @@ class ContextualMemoryManager:
         
         if Config.LONG_TERM_MEMORY_ENABLED:
             try:
-                count_sql = f"SELECT COUNT(*) as cnt FROM {Config.LONG_TERM_MEMORY_TABLE}"
+                count_sql = f"SELECT COUNT(*) as cnt FROM {self._ltm_table}"
                 count_df = run_warehouse_df(count_sql)
                 stats["long_term_contexts"] = count_df.iloc[0, 0] if not count_df.empty else 0
             except:
