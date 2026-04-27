@@ -181,7 +181,6 @@ st.set_page_config(
     layout="wide",
     page_icon=PAGE_ICON_URL,
 )
-# display_session_history_sidebar()
 # ---------- Fabric Session ----------
 # Session object is created immediately (no network call — just builds the object).
 # All DB work is deferred until after Streamlit binds its port, so Azure's 230s
@@ -771,6 +770,48 @@ def _get_frequent_questions_by_user(n: int = 10):
     except Exception:
         return []
 
+def _load_user_chat_dates() -> list:
+ 
+    """Fetches distinct chat dates for the current user."""
+ 
+    try:
+ 
+        current_user = _get_current_user_raw() or "UNKNOWN"
+ 
+        user_esc = _sql_escape(current_user)
+ 
+        WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
+ 
+        sql = f"""
+           SELECT
+                distinct [ChatDate]
+            FROM {WH_TBL}
+            WHERE UPPER(Username) = UPPER('{current_user}') AND [Action_Type] IN ('CACHE_HIT', 'GENIE_QUERY');
+        """
+ 
+        df = run_warehouse_df(sql)
+ 
+        if df is None or df.empty:
+ 
+            return []
+ 
+        return [
+ 
+            {
+ 
+                "ChatDate": (str(row.get("ChatDate") or ""))
+            }
+ 
+            for _, row in df.iterrows()
+ 
+        ]
+ 
+    except Exception as e:
+ 
+        st.warning(f"Could not load query history: {e}")
+ 
+        return []
+
 def _load_user_query_history() -> list:
  
     """Fetches Normalized_query + frequency for the current user."""
@@ -812,7 +853,7 @@ def _load_user_query_history() -> list:
  
             {
  
-                "query": (str(row.get("Question") or "")).strip(),
+                "Query": (str(row.get("Question") or "")).strip(),
  
                 "count": int(row.get("Frequency") or 0)
  
@@ -1466,6 +1507,7 @@ def load_clean_ui_light():
       height: 120px !important; max-height: 120px !important; width: auto !important;
       object-fit: contain !important;
       display: block;
+      transform: translateY(-42px);
     }
 
     /* Preset buttons (Last 30 Days / QTD / YTD / Custom) — same size, one line */
@@ -5192,12 +5234,13 @@ if st.session_state.get('page') == 'genie':
                 if st.button("Export MD", use_container_width=True, key="btn_export"):
                     # Generate markdown from chat history
                     history = _load_user_query_history()
-                    if history:
+                    ChatDate = _load_user_chat_dates()
+                    if ChatDate:
                         md_content = "# Chat History\n\n"
-                        for item in history:
-                            query_text = item.get("query", "")
+                        for item in ChatDate:
+                            ChatDate_text = item.get("ChatDate", "")
                             freq = item.get("count", 0)
-                            md_content += f"## {query_text}\n"
+                            md_content += f"## {ChatDate_text}\n"
                             md_content += f"*Asked {freq} times*\n\n"
                         
                         st.download_button(
@@ -5230,37 +5273,19 @@ if st.session_state.get('page') == 'genie':
                 unsafe_allow_html=True,
             )
 
-            # Time period filter buttons (even width across the available row)
-            col1, col2, col3 = st.columns([1, 1, 1], gap="small")
-            filter_days = st.session_state.get("query_filter_days", 7)
-            
-            with col1:
-                if st.button("Today", key="filter_today", use_container_width=True, type="secondary"):
-                    st.session_state.query_filter_days = 1
-                    st.rerun()
-            with col2:
-                if st.button("3 days", key="filter_3days", use_container_width=True, type="secondary"):
-                    st.session_state.query_filter_days = 3
-                    st.rerun()
-            with col3:
-                if st.button("7 days", key="filter_7days", use_container_width=True, type="secondary"):
-                    st.session_state.query_filter_days = 7
-                    st.rerun()
-
-            st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
-
             # Show conversation history or empty state
             if st.session_state.get("show_conversation_history", True):
                 # Returns list of {"query": ..., "count": ...}
                 history = _load_user_query_history()
+                ChatDate = _load_user_chat_dates()
 
-                if not history:
+                if not ChatDate:
                     st.info("No query history found for your account.")
                 else:
                     # Render each query as a card
-                    for i, item in enumerate(history[:6]):  # Show up to 6 cards
-                        query_text = item["query"]
-                        freq = item["count"]
+                    for i, item in enumerate(ChatDate[:]):  # Show up to 6 cards
+                        query_text = item["ChatDate"]
+                        # freq = item.get("count", 0)
 
                         # Screenshot-style layout: card left, blue resume button on right
                         card_col1, card_col2 = st.columns([4.4, 1.6], gap="small")
@@ -5269,7 +5294,6 @@ if st.session_state.get('page') == 'genie':
                                 f"""
                                 <div style="border: 1px solid #E5E7EB; border-radius: 10px; padding: 16px; background-color: #FFFFFF; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);">
                                     <div style="font-size: 14px; font-weight: 700; color: #0F172A; margin-bottom: 6px;">{query_text[:60]}{'...' if len(query_text) > 60 else ''}</div>
-                                    <div style="font-size: 13px; color: #64748B;">{freq} message{'s' if freq != 1 else ''}</div>
                                 </div>
                                 """,
                                 unsafe_allow_html=True,
