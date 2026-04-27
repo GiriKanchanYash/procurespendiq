@@ -869,12 +869,45 @@ def _load_user_query_history() -> list:
  
         return []
  
-# ========== Utilities ==========
+def _load_queries_by_date(chat_date: str) -> list:
+    """Fetches all queries for a specific date."""
+    try:
+        current_user = _get_current_user_raw() or "UNKNOWN"
+        WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
+        
+        sql = f"""
+           SELECT
+                [Question],
+                [AnswerSummary],
+                [FullAnswer],
+                [Sql_Query],
+                [Action_Type],
+                [Action_Details],
+                [ChatDate]
+            FROM {WH_TBL}
+            WHERE UPPER(Username) = UPPER('{current_user}') AND [ChatDate] = '{chat_date}' AND [Action_Type] IN ('CACHE_HIT', 'GENIE_QUERY');
+        """
+        
+        df = run_warehouse_df(sql)
+        
+        if df is None or df.empty:
+            return []
+        
+        return [
+            {
+                "question": (str(row.get("Question") or "")).strip(),
+                "summary": (str(row.get("AnswerSummary") or "")).strip(),
+                "full_answer": (str(row.get("FullAnswer") or "")).strip(),
+                "sql": (str(row.get("Sql_Query") or "")).strip(),
+                "action_type": (str(row.get("Action_Type") or "")).strip(),
+                "action_details": (str(row.get("Action_Details") or "")).strip()
+            }
+            for _, row in df.iterrows()
+        ]
+    except Exception as e:
+        st.warning(f"Could not load chat history for date {chat_date}: {e}")
+        return []
 
-def compute_range_preset(preset: str):
-    today = date.today()
-    if preset == "Last 30 Days":
-        return today - timedelta(days=30), today
     if preset == "QTD":
         start = date(today.year, ((today.month - 1)//3)*3 + 1, 1)
         return start, today
@@ -4712,6 +4745,12 @@ if st.session_state.get('page') == 'genie':
         st.session_state.sidebar_expanded = True
     if "genie_input_version" not in st.session_state:
         st.session_state.genie_input_version = 0
+    if "show_loaded_chat_history" not in st.session_state:
+        st.session_state.show_loaded_chat_history = False
+    if "loaded_chat_history" not in st.session_state:
+        st.session_state.loaded_chat_history = []
+    if "loaded_chat_date" not in st.session_state:
+        st.session_state.loaded_chat_date = ""
     if "query_filter_days" not in st.session_state:
         st.session_state.query_filter_days = 7
     if "show_conversation_history" not in st.session_state:
@@ -5253,6 +5292,7 @@ if st.session_state.get('page') == 'genie':
                     else:
                         st.info("No chat history to export.")
 
+
             with btn4:
                 if st.button("Clear", use_container_width=True, key="btn_clear"):
                     st.session_state.show_analysis = False
@@ -5262,71 +5302,127 @@ if st.session_state.get('page') == 'genie':
 
             st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
 
-            # Blue background section
-            st.markdown(
-                """
-                <div style="background-color: #EEF4FF; border-radius: 12px; padding: 20px; margin-bottom: 20px;">
-                    <h2 style="font-size: 20px; font-weight: 800; color: #0F172A; margin: 0 0 8px 0;">Resume a previous conversation</h2>
-                    <p style="font-size: 14px; color: #475569; margin: 0;">View chats from your recent activity. Pick one to continue, or ask a new question.</p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            # Show conversation history or empty state
-            if st.session_state.get("show_conversation_history", True):
-                # Returns list of {"query": ..., "count": ...}
-                history = _load_user_query_history()
-                ChatDate = _load_user_chat_dates()
-
-                if not ChatDate:
-                    st.info("No query history found for your account.")
-                else:
-                    # Render each query as a card
-                    for i, item in enumerate(ChatDate[:]):  # Show up to 6 cards
-                        query_text = item["ChatDate"]
-                        # freq = item.get("count", 0)
-
-                        # Screenshot-style layout: card left, blue resume button on right
-                        card_col1, card_col2 = st.columns([4.4, 1.6], gap="small")
-                        with card_col1:
-                            st.markdown(
-                                f"""
-                                <div style="border: 1px solid #E5E7EB; border-radius: 10px; padding: 16px; background-color: #FFFFFF; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);">
-                                    <div style="font-size: 14px; font-weight: 700; color: #0F172A; margin-bottom: 6px;">{query_text[:60]}{'...' if len(query_text) > 60 else ''}</div>
-                                </div>
-                                """,
-                                unsafe_allow_html=True,
-                            )
-                        with card_col2:
-                            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-                            if st.button("Resume", key=f"resume_query_{i}", use_container_width=True, type="primary"):
-                                st.session_state["prefilled_question"] = query_text
-                                st.session_state.show_analysis = True
-                                with st.spinner("Loading..."):
-                                    st.session_state.analyst_response = process_genie_query(query_text)
-                                st.rerun()
-                        
+            # Display loaded chat history from a specific date - takes priority
+            if st.session_state.get("show_loaded_chat_history", False):
+                chat_date = st.session_state.get("loaded_chat_date", "")
+                chat_history = st.session_state.get("loaded_chat_history", [])
+                
+                if chat_history:
+                    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+                    # Header with back button
+                    col_back, col_title, col_spacer = st.columns([1, 4, 1])
+                    with col_back:
+                        if st.button("← Back", key="back_from_chat_history"):
+                            st.session_state["show_loaded_chat_history"] = False
+                            st.session_state["loaded_chat_history"] = []
+                            st.session_state["loaded_chat_date"] = ""
+                            st.rerun()
+                    with col_title:
+                        st.markdown(f"""
+                        <div style="font-size:18px;font-weight:800;color:#0F172A;">Chat History - {chat_date}</div>
+                        """, unsafe_allow_html=True)
+                    
+                    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+                    
+                    # Display each question-answer pair in conversation style
+                    for idx, query_item in enumerate(chat_history):
                         st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+                        
+                        # User message (question)
+                        question = query_item.get("question", "")
+                        if question:
+                            st.markdown(f"""
+                            <div style="background-color:#E7F3FF;border-radius:10px;padding:12px 16px;margin-bottom:8px;border-left:4px solid #0F172A;">
+                                <div style="font-size:12px;font-weight:700;color:#64748B;margin-bottom:4px;">Your Question</div>
+                                <div style="font-size:14px;font-weight:600;color:#0F172A;">{question}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        
+                        # Assistant message (answer summary)
+                        summary = query_item.get("summary", "")
+                        if summary:
+                            st.markdown(f"""
+                            <div style="background-color:#F0F4F8;border-radius:10px;padding:12px 16px;margin-bottom:8px;border-left:4px solid #059669;">
+                                <div style="font-size:12px;font-weight:700;color:#64748B;margin-bottom:4px;">Response</div>
+                                <div style="font-size:13px;color:#1F2937;">{summary}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                    
+                    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+            # Show resume conversation section only when NOT viewing chat history
             else:
-                # Empty state - Start a Conversation
+                # Blue background section
                 st.markdown(
                     """
-                    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; text-align: center;">
-                        <div style="width: 80px; height: 80px; background-color: #DBEAFE; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 20px;">
-                            <span style="font-size: 40px; color: #93C5FD;">+</span>
-                        </div>
-                        <h2 style="font-size: 20px; font-weight: 800; color: #0F172A; margin: 0 0 12px 0;">Start a Conversation</h2>
-                        <p style="font-size: 14px; color: #64748B; margin: 0; max-width: 300px;">Ask questions about your Procurement to Pay data, or select a pre-built analysis from the library.</p>
+                    <div style="background-color: #EEF4FF; border-radius: 12px; padding: 20px; margin-bottom: 20px;">
+                        <h2 style="font-size: 20px; font-weight: 800; color: #0F172A; margin: 0 0 8px 0;">Resume a previous conversation</h2>
+                        <p style="font-size: 14px; color: #475569; margin: 0;">View chats from your recent activity. Pick one to continue, or ask a new question.</p>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
+                # Show conversation history or empty state
+                if st.session_state.get("show_conversation_history", True):
+                    # Returns list of {"query": ..., "count": ...}
+                    history = _load_user_query_history()
+                    ChatDate = _load_user_chat_dates()
+
+                    if not ChatDate:
+                        st.info("No query history found for your account.")
+                    else:
+                        # Render each query as a card
+                        for i, item in enumerate(ChatDate[:]):  # Show up to 6 cards
+                            query_text = item["ChatDate"]
+                            # freq = item.get("count", 0)
+
+                            # Screenshot-style layout: card left, blue resume button on right
+                            card_col1, card_col2 = st.columns([4.4, 1.6], gap="small")
+                            with card_col1:
+                                st.markdown(
+                                    f"""
+                                    <div style="border: 1px solid #E5E7EB; border-radius: 10px; padding: 16px; background-color: #FFFFFF; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); display: flex; align-items: center; min-height: 44px;">
+                                        <div style="font-size: 14px; font-weight: 700; color: #0F172A;">{query_text[:60]}{'...' if len(query_text) > 60 else ''}</div>
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True,
+                                )
+                            with card_col2:
+                                st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+                                if st.button("Resume", key=f"resume_query_{i}", use_container_width=True, type="primary"):
+                                    with st.spinner("Loading chat history..."):
+                                        # Load all queries for this date
+                                        chat_queries = _load_queries_by_date(query_text)
+                                        if chat_queries:
+                                            # Store the loaded chat history in session state
+                                            st.session_state["loaded_chat_date"] = query_text
+                                            st.session_state["loaded_chat_history"] = chat_queries
+                                            st.session_state["show_loaded_chat_history"] = True
+                                        else:
+                                            st.warning(f"No chat history found for {query_text}")
+                                    st.rerun()
+                            
+                            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+                else:
+                    # Empty state - Start a Conversation
+                    st.markdown(
+                        """
+                        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; text-align: center;">
+                            <div style="width: 80px; height: 80px; background-color: #DBEAFE; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 20px;">
+                                <span style="font-size: 40px; color: #93C5FD;">+</span>
+                            </div>
+                            <h2 style="font-size: 20px; font-weight: 800; color: #0F172A; margin: 0 0 12px 0;">Start a Conversation</h2>
+                            <p style="font-size: 14px; color: #64748B; margin: 0; max-width: 300px;">Ask questions about your Procurement to Pay data, or select a pre-built analysis from the library.</p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
             st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
 
-            # Chat area
-            if st.session_state.show_analysis and st.session_state.analyst_response:
+            # Chat area - show when not viewing loaded chat history
+            if not st.session_state.get("show_loaded_chat_history", False) and st.session_state.show_analysis and st.session_state.analyst_response:
                 response = st.session_state.analyst_response
                 analysis_key = st.session_state.selected_analysis
                 a = QUICK_ANALYSES.get(analysis_key, {})
