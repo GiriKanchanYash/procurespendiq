@@ -797,9 +797,12 @@ def _load_user_chat_dates() -> list:
  
         sql = f"""
            SELECT
-                distinct [ChatDate]
+                distinct [ChatDate],
+                count(*) as QueryCount
             FROM {WH_TBL}
-            WHERE UPPER(Username) = UPPER('{current_user}') AND [Action_Type] IN ('CACHE_HIT', 'GENIE_QUERY');
+            WHERE UPPER(Username) = UPPER('{current_user}') AND [Action_Type] IN ('GENIE_QUERY')
+            group by [ChatDate]
+            order by [ChatDate] desc;
         """
  
         df = run_warehouse_df(sql)
@@ -812,7 +815,8 @@ def _load_user_chat_dates() -> list:
  
             {
  
-                "ChatDate": (str(row.get("ChatDate") or ""))
+                "ChatDate": (str(row.get("ChatDate") or "")),
+                "count": int(row.get("QueryCount") or 0)
             }
  
             for _, row in df.iterrows()
@@ -825,63 +829,53 @@ def _load_user_chat_dates() -> list:
  
         return []
 
-def _load_user_query_history() -> list:
- 
-    """Fetches Normalized_query + frequency for the current user."""
- 
+def generate_context_summary(
+    question: str,
+    full_answer: str,
+    sql_query: str
+) -> str:
+    """
+    Uses AI to generate a concise 2–3 line context summary
+    based on the user's question, executed SQL, and full analytical answer.
+    Intended for chat history, memory, or context recall.
+    """
+
     try:
- 
-        current_user = _get_current_user_raw() or "UNKNOWN"
- 
-        user_esc = _sql_escape(current_user)
- 
-        WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
- 
-        sql = f"""
-           SELECT
-                [Username],
-                [Question],
-                [AnswerSummary],
-                [FullAnswer],
-                [Context_Hash],
-                [Sql_Query],
-                [Tables_Used],
-                [Filters_Applied],
-                [CacheKey],
-                [Frequency],
-                [Action_Type],
-                [Action_Details],
-                [ChatDate]
-            FROM {WH_TBL}
-            WHERE UPPER(Username) = UPPER('{current_user}') AND [Action_Type] IN ('CACHE_HIT', 'GENIE_QUERY');
+        prompt = f"""
+
+            You are generating a short-term analytical memory.
+
+            Create a 2–3 sentence CONTEXT SUMMARY.
+
+            INPUT:
+            Question:
+            {question}
+
+            Answer:
+            {full_answer}
+
+            SQL Query:
+            {sql_query}
+
+            RULES:
+            - Ignore recommendations and prescriptive guidance
+            - Capture:
+            1) Analytical intent
+            2) Data analyzed
+            3) Key conclusion
+            - No bullet points, no numbers unless critical
+            - Neutral, factual language
+            - Max 3 sentences
+            - Output only the summary text
         """
- 
-        df = run_warehouse_df(sql)
- 
-        if df is None or df.empty:
- 
-            return []
- 
-        return [
- 
-            {
- 
-                "Query": (str(row.get("Question") or "")).strip(),
- 
-                "count": int(row.get("Frequency") or 0)
- 
-            }
- 
-            for _, row in df.iterrows()
- 
-        ]
- 
+
+        summary = cortex_complete(prompt, temperature=0.2)
+
+        return (summary or "").strip()
+
     except Exception as e:
- 
-        st.warning(f"Could not load query history: {e}")
- 
-        return []
- 
+        return f"Summary generation failed: {str(e)}"
+
 def _load_queries_by_date(chat_date: str) -> list:
     """Fetches all queries for a specific date."""
     try:
@@ -898,7 +892,7 @@ def _load_queries_by_date(chat_date: str) -> list:
                 [Action_Details],
                 [ChatDate]
             FROM {WH_TBL}
-            WHERE UPPER(Username) = UPPER('{current_user}') AND [ChatDate] = '{chat_date}' AND [Action_Type] IN ('CACHE_HIT', 'GENIE_QUERY');
+            WHERE UPPER(Username) = UPPER('{current_user}') AND [ChatDate] = '{chat_date}' AND [Action_Type] IN ('GENIE_QUERY');
         """
         
         df = run_warehouse_df(sql)
@@ -927,6 +921,8 @@ def _load_queries_by_date(chat_date: str) -> list:
     if preset == "YTD":
         return date(today.year, 1, 1), today
     return today.replace(day=1), today  # Current month
+
+
 
 def sql_date(d: date) -> str:
     return f"'{d.strftime('%Y-%m-%d')}'"
@@ -5000,8 +4996,11 @@ if st.session_state.get('page') == 'genie':
                         ]
                         if text_parts:
                             result_full_answer = "\n\n".join([x for x in text_parts if x])
-                            result_summary = result_full_answer[:]
-
+                            result_summary = generate_context_summary(
+                                        question=query,
+                                        full_answer=result_full_answer,
+                                        sql_query=result_sql
+                                    )[:20000]
                     if sql_statements:
                         sql_block_count = len(sql_statements)
                         result_sql = "\n\n-- NEXT BLOCK --\n\n".join(sql_statements)
@@ -5285,7 +5284,6 @@ if st.session_state.get('page') == 'genie':
             with btn3:
                 if st.button("Export MD", use_container_width=True, key="btn_export"):
                     # Generate markdown from chat history
-                    history = _load_user_query_history()
                     ChatDate = _load_user_chat_dates()
                     if ChatDate:
                         md_content = "# Chat History\n\n"
@@ -5379,7 +5377,6 @@ if st.session_state.get('page') == 'genie':
                 # Show conversation history or empty state
                 if st.session_state.get("show_conversation_history", True):
                     # Returns list of {"query": ..., "count": ...}
-                    history = _load_user_query_history()
                     ChatDate = _load_user_chat_dates()
 
                     if not ChatDate:
@@ -5387,33 +5384,52 @@ if st.session_state.get('page') == 'genie':
                     else:
                         # Render each query as a card
                         for i, item in enumerate(ChatDate[:]):  # Show up to 6 cards
-                            query_text = item["ChatDate"]
-                            # freq = item.get("count", 0)
+                            chat_date = item["ChatDate"]
+                            freq = item.get("count", 0)
 
                             # Screenshot-style layout: card left, blue resume button on right
                             card_col1, card_col2 = st.columns([4.4, 1.6], gap="small")
                             with card_col1:
                                 st.markdown(
                                     f"""
-                                    <div style="border: 1px solid #E5E7EB; border-radius: 10px; padding: 16px; background-color: #FFFFFF; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); display: flex; align-items: center; min-height: 44px;">
-                                        <div style="font-size: 14px; font-weight: 700; color: #0F172A;">{query_text[:60]}{'...' if len(query_text) > 60 else ''}</div>
+                                    <div style="
+                                        border: 1px solid #E5E7EB;
+                                        border-radius: 10px;
+                                        padding: 16px;
+                                        background-color: #FFFFFF;
+                                        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+                                        display: flex;
+                                        justify-content: space-between;
+                                        align-items: center;
+                                        min-height: 44px;
+                                    ">
+                                        <!-- Query Text -->
+                                        <div style="
+                                            font-size: 14px;
+                                            font-weight: 700;
+                                            color: #0F172A;
+                                            max-width: 75%;
+                                        ">
+                                            {chat_date[:60]}{'...' if len(chat_date) > 60 else ''}
+                                        </div>
                                     </div>
                                     """,
                                     unsafe_allow_html=True,
                                 )
+
                             with card_col2:
                                 st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
                                 if st.button("Resume", key=f"resume_query_{i}", use_container_width=True, type="primary"):
                                     with st.spinner("Loading chat history..."):
                                         # Load all queries for this date
-                                        chat_queries = _load_queries_by_date(query_text)
+                                        chat_queries = _load_queries_by_date(chat_date)
                                         if chat_queries:
                                             # Store the loaded chat history in session state
-                                            st.session_state["loaded_chat_date"] = query_text
+                                            st.session_state["loaded_chat_date"] = chat_date
                                             st.session_state["loaded_chat_history"] = chat_queries
                                             st.session_state["show_loaded_chat_history"] = True
                                         else:
-                                            st.warning(f"No chat history found for {query_text}")
+                                            st.warning(f"No chat history found for {chat_date}")
                                     st.rerun()
                             
                             st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
