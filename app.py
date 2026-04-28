@@ -697,6 +697,19 @@ def _get_saved_insights_for_user(
 
 GENIE_HISTORY_TABLE = f"[{DB}].[{SCHEMA}].[genie_question_history]"
 
+# ========== Utilities ==========
+
+def compute_range_preset(preset: str):
+    today = date.today()
+    if preset == "Last 30 Days":
+        return today - timedelta(days=30), today
+    if preset == "QTD":
+        start = date(today.year, ((today.month - 1)//3)*3 + 1, 1)
+        return start, today
+    if preset == "YTD":
+        return date(today.year, 1, 1), today
+    return today.replace(day=1), today  # Current month
+
 def _get_frequent_questions(n: int = 10):
     """Top n questions by total frequency across all users. Groups by normalized_query."""
     try:
