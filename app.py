@@ -5055,6 +5055,9 @@ if st.session_state.get('page') == 'genie':
                 "cache_key": cache_key_for_log,
                 "relevance": 0.9 if result_sql else 0.5,
             })
+            # Store summary in session_state so caller can append to chat bubble view
+            st.session_state["_last_genie_summary"] = result_summary
+            st.session_state["_last_genie_sql"] = result_sql
         except Exception as outer_error:
             logger.warning(f"Cache operation failed: {outer_error}")
 
@@ -5280,28 +5283,76 @@ if st.session_state.get('page') == 'genie':
                     st.session_state.show_conversation_history = True
                     st.rerun()
             with btn2:
-                st.button("Summarize", use_container_width=True, key="btn_summarize")
-            with btn3:
-                if st.button("Export MD", use_container_width=True, key="btn_export"):
-                    # Generate markdown from chat history
-                    ChatDate = _load_user_chat_dates()
-                    if ChatDate:
-                        md_content = "# Chat History\n\n"
-                        for item in ChatDate:
-                            ChatDate_text = item.get("ChatDate", "")
-                            freq = item.get("count", 0)
-                            md_content += f"## {ChatDate_text}\n"
-                            md_content += f"*Asked {freq} times*\n\n"
-                        
-                        st.download_button(
-                            label="Download Chat History",
-                            data=md_content,
-                            file_name="chat_history.md",
-                            mime="text/markdown",
-                            key="download_chat_md"
-                        )
+                if st.button("Summarize", use_container_width=True, key="btn_summarize"):
+                    session_qs = st.session_state.get("genie_queries", [])
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    db_qs = _load_queries_by_date(today_str)
+                    all_questions = []
+                    seen = set()
+                    for q in db_qs:
+                        txt = q.get("question", "").strip()
+                        if txt and txt not in seen:
+                            seen.add(txt)
+                            all_questions.append({"question": txt, "answer": q.get("full_answer") or q.get("summary", "")})
+                    for q in session_qs:
+                        txt = q.get("question", "").strip()
+                        if txt and txt not in seen:
+                            seen.add(txt)
+                            all_questions.append({"question": txt, "answer": q.get("summary", "")})
+                    if all_questions:
+                        with st.spinner("Generating session summary..."):
+                            qa_block = "\n\n".join(
+                                f"Q: {item['question']}\nA: {item['answer']}"
+                                for item in all_questions if item.get("question")
+                            )
+                            summary_prompt = f"""You are an AI analyst summarising a procurement analytics session.\n\nThe user asked the following questions today:\n{qa_block}\n\nGenerate a concise executive SESSION SUMMARY with these sections:\n1. **Session Overview** - What topics and data areas did the user explore? (2-3 sentences)\n2. **Key Findings** - The most important data insights surfaced. (3-5 bullet points)\n3. **Patterns & Themes** - Recurring themes, vendors, time periods, or anomalies. (2-3 sentences)\n4. **Suggested Next Steps** - Follow-up questions or actions that would add value. (2-3 bullet points)\n\nBe concise and factual. Output only the summary."""
+                            result = cortex_complete(summary_prompt, temperature=0.3)
+                            st.session_state["session_summary_text"] = (result or "").strip()
+                            st.session_state["show_session_summary"] = True
                     else:
+                        st.info("No questions found for today's session to summarize.")
+            with btn3:
+                # Build AI-summarised MD; cache in session_state so it only regenerates once
+                if "export_md_content" not in st.session_state:
+                    chat_dates = _load_user_chat_dates()
+                    if chat_dates:
+                        md_lines = ["# Chat History — AI Summary\n"]
+                        for item in chat_dates:
+                            chat_date_text = item.get("ChatDate", "")
+                            freq = item.get("count", 0)
+                            md_lines.append(f"## {chat_date_text}  _(asked {freq} time{'s' if freq != 1 else ''})_\n")
+                            queries = _load_queries_by_date(chat_date_text)
+                            if queries:
+                                for idx, q in enumerate(queries, 1):
+                                    question = q.get("question", "").strip()
+                                    full_answer = q.get("full_answer", "").strip()
+                                    sql = q.get("sql", "").strip()
+                                    summary = q.get("summary", "").strip()
+                                    # Use stored summary if available, otherwise generate via AI
+                                    if not summary and (question or full_answer):
+                                        summary = generate_context_summary(question, full_answer, sql)
+                                    md_lines.append(f"### Q{idx}: {question}\n")
+                                    md_lines.append(f"{summary if summary else '_No summary available._'}\n")
+                            else:
+                                md_lines.append("_No query details found for this date._\n")
+                        st.session_state.export_md_content = "\n".join(md_lines)
+                    else:
+                        st.session_state.export_md_content = None
+
+                if st.session_state.get("export_md_content"):
+                    st.download_button(
+                        label="Export MD",
+                        data=st.session_state.export_md_content,
+                        file_name="chat_history.md",
+                        mime="text/markdown",
+                        use_container_width=True,
+                        key="btn_export"
+                    )
+                else:
+                    if st.button("Export MD", use_container_width=True, key="btn_export_empty"):
                         st.info("No chat history to export.")
+
+            
 
 
             with btn4:
@@ -5312,6 +5363,21 @@ if st.session_state.get('page') == 'genie':
                     st.rerun()
 
             st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+
+            # Session summary panel - full width, shown below the button row
+            if st.session_state.get("show_session_summary") and st.session_state.get("session_summary_text"):
+                import re as _re_sum
+                _sum_html = st.session_state["session_summary_text"].replace("\n", "<br/>")
+                _sum_html = _re_sum.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', _sum_html)
+                st.markdown(f"""
+                <div style="background:#f0f9ff;border-radius:12px;border-left:4px solid #0284c7;padding:20px 24px;margin-bottom:16px;">
+                    <div style="font-size:15px;font-weight:800;color:#0369a1;margin-bottom:12px;">Session Summary</div>
+                    <div style="font-size:13px;color:#1e293b;line-height:1.8;">{_sum_html}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                if st.button("Close Summary", key="close_summary"):
+                    st.session_state["show_session_summary"] = False
+                    st.rerun()
 
             # Display loaded chat history from a specific date - takes priority
             if st.session_state.get("show_loaded_chat_history", False):
@@ -5334,31 +5400,32 @@ if st.session_state.get('page') == 'genie':
                         """, unsafe_allow_html=True)
                     
                     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
-                    
-                    # Display each question-answer pair in conversation style
+
+                    # Build full chat bubble HTML in one block
+                    chat_bubbles_html = '<div style="display:flex;flex-direction:column;gap:16px;padding:4px 0;">'
                     for idx, query_item in enumerate(chat_history):
-                        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-                        
-                        # User message (question)
-                        question = query_item.get("question", "")
+                        question = query_item.get("question", "").strip()
+                        summary  = query_item.get("summary", "").strip()
+                        # User bubble - right aligned, blue
                         if question:
-                            st.markdown(f"""
-                            <div style="background-color:#E7F3FF;border-radius:10px;padding:12px 16px;margin-bottom:8px;border-left:4px solid #0F172A;">
-                                <div style="font-size:12px;font-weight:700;color:#64748B;margin-bottom:4px;">Your Question</div>
-                                <div style="font-size:14px;font-weight:600;color:#0F172A;">{question}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        
-                        # Assistant message (answer summary)
-                        summary = query_item.get("summary", "")
+                            chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-end;">
+                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-right:4px;">You</div>
+                                <div style="background:#3B5BDB;color:#fff;border-radius:18px 18px 4px 18px;
+                                            padding:12px 16px;max-width:80%;font-size:13px;font-weight:500;line-height:1.5;">
+                                    {question}
+                                </div>
+                            </div>'''
+                        # AI bubble - left aligned, light grey
                         if summary:
-                            st.markdown(f"""
-                            <div style="background-color:#F0F4F8;border-radius:10px;padding:12px 16px;margin-bottom:8px;border-left:4px solid #059669;">
-                                <div style="font-size:12px;font-weight:700;color:#64748B;margin-bottom:4px;">Response</div>
-                                <div style="font-size:13px;color:#1F2937;">{summary}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                    
+                            chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-start;">
+                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-left:4px;">AI Assistant</div>
+                                <div style="background:#F1F5F9;color:#1e293b;border-radius:18px 18px 18px 4px;
+                                            padding:12px 16px;max-width:85%;font-size:13px;line-height:1.6;">
+                                    {summary}
+                                </div>
+                            </div>'''
+                    chat_bubbles_html += '</div>'
+                    st.markdown(chat_bubbles_html, unsafe_allow_html=True)
                     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 
             # Show resume conversation section only when NOT viewing chat history
@@ -5895,4 +5962,15 @@ ORDER BY Sort_Order;
                             st.session_state.analyst_response = process_genie_query(user_query)
                     else:
                         st.session_state.analyst_response = process_genie_query(user_query)
+                # If the user is currently viewing a loaded chat history,
+                # append the new Q&A directly into that bubble view so it stays visible
+                if st.session_state.get("show_loaded_chat_history", False):
+                    _new_summary = st.session_state.pop("_last_genie_summary", "") or user_query.strip()
+                    _new_sql = st.session_state.pop("_last_genie_sql", "")
+                    st.session_state["loaded_chat_history"].append({
+                        "question": user_query.strip(),
+                        "summary": _new_summary,
+                        "full_answer": _new_summary,
+                        "sql": _new_sql,
+                    })
                 st.rerun()
