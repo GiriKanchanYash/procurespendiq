@@ -5454,52 +5454,68 @@ if st.session_state.get('page') == 'genie':
                             chat_date = item["ChatDate"]
                             freq = item.get("count", 0)
 
-                            # Screenshot-style layout: card left, blue resume button on right
+                            # Calculate how long ago this chat date was
+                            try:
+                                _chat_dt = datetime.strptime(str(chat_date).strip()[:10], "%Y-%m-%d")
+                                _now = datetime.now()
+                                _diff_hours = int((_now - _chat_dt).total_seconds() // 3600)
+                                if _diff_hours < 1:
+                                    _time_ago = "just now"
+                                elif _diff_hours < 24:
+                                    _time_ago = f"{_diff_hours}h ago"
+                                elif _diff_hours < 48:
+                                    _time_ago = "1 day ago"
+                                else:
+                                    _diff_days = _diff_hours // 24
+                                    _time_ago = f"{_diff_days} days ago"
+                            except Exception:
+                                _time_ago = ""
+
+                            # Native Streamlit card - no raw HTML to avoid escaping issues
+                            _is_active = (
+                                st.session_state.get("show_loaded_chat_history", False)
+                                and st.session_state.get("loaded_chat_date") == chat_date
+                            )
+                            _msg_label = str(freq) + " message" + ("s" if freq != 1 else "") + ("  ·  " + _time_ago if _time_ago else "")
+                            _display_title = f"Chat on {chat_date}"
                             card_col1, card_col2 = st.columns([4.4, 1.6], gap="small")
                             with card_col1:
-                                st.markdown(
-                                    f"""
-                                    <div style="
-                                        border: 1px solid #E5E7EB;
-                                        border-radius: 10px;
-                                        padding: 16px;
-                                        background-color: #FFFFFF;
-                                        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-                                        display: flex;
-                                        justify-content: space-between;
-                                        align-items: center;
-                                        min-height: 44px;
-                                    ">
-                                        <!-- Query Text -->
-                                        <div style="
-                                            font-size: 14px;
-                                            font-weight: 700;
-                                            color: #0F172A;
-                                            max-width: 75%;
-                                        ">
-                                            {chat_date[:60]}{'...' if len(chat_date) > 60 else ''}
-                                        </div>
-                                    </div>
-                                    """,
-                                    unsafe_allow_html=True,
+                                _border_style = (
+                                    "border:2px solid #16a34a;border-radius:10px;padding:12px 16px;background:#f0fdf4;"
+                                    if _is_active else
+                                    "border:1px solid #E5E7EB;border-radius:10px;padding:12px 16px;background:#FFFFFF;"
                                 )
-
+                                if _is_active:
+                                    _active_badge = '<span style="background:#16a34a;color:#fff;border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700;margin-left:8px;">Active</span>'
+                                    st.markdown(
+                                        f'<div style="{_border_style}">'
+                                        f'<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">{_display_title}{_active_badge}</div>'
+                                        f'<div style="font-size:12px;color:#6B7280;">{_msg_label}</div>'
+                                        f'</div>',
+                                        unsafe_allow_html=True
+                                    )
+                                else:
+                                    st.markdown(
+                                        f'<div style="{_border_style}">'
+                                        f'<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">{_display_title}</div>'
+                                        f'<div style="font-size:12px;color:#6B7280;">{_msg_label}</div>'
+                                        f'</div>',
+                                        unsafe_allow_html=True
+                                    )
                             with card_col2:
-                                st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-                                if st.button("Resume", key=f"resume_query_{i}", use_container_width=True, type="primary"):
-                                    with st.spinner("Loading chat history..."):
-                                        # Load all queries for this date
-                                        chat_queries = _load_queries_by_date(chat_date)
-                                        if chat_queries:
-                                            # Store the loaded chat history in session state
-                                            st.session_state["loaded_chat_date"] = chat_date
-                                            st.session_state["loaded_chat_history"] = chat_queries
-                                            st.session_state["show_loaded_chat_history"] = True
-                                        else:
-                                            st.warning(f"No chat history found for {chat_date}")
-                                    st.rerun()
-                            
-                            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+                                st.write("")
+                                if not _is_active:
+                                    if st.button("Resume", key=f"resume_query_{i}", use_container_width=True, type="primary"):
+                                        with st.spinner("Loading chat history..."):
+                                            chat_queries = _load_queries_by_date(chat_date)
+                                            if chat_queries:
+                                                st.session_state["loaded_chat_date"] = chat_date
+                                                st.session_state["loaded_chat_history"] = chat_queries
+                                                st.session_state["show_loaded_chat_history"] = True
+                                            else:
+                                                st.warning(f"No chat history found for {chat_date}")
+                                        st.rerun()
+                            st.write("")
                 else:
                     # Empty state - Start a Conversation
                     st.markdown(
