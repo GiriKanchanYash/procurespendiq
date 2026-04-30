@@ -4696,11 +4696,11 @@ if st.session_state.get('page','dashboard') == 'dashboard':
                 """
                 top = run_df(top_sql)
                 if top is None or top.empty:
-                    top = pd.DataFrame({
-                        'VENDOR_NAME': ['Globalogistics Corp','Mainframe Solutions','Apex Supplies','Inorbit','Cosewise','iCraft'],
-                        'SPEND': [1200000,880000,600000,580000,550000,520000]
-                    })
-                    st.info("Using sample vendor data")
+                #     top = pd.DataFrame({
+                #         'VENDOR_NAME': ['Globalogistics Corp','Mainframe Solutions','Apex Supplies','Inorbit','Cosewise','iCraft'],
+                #         'SPEND': [1200000,880000,600000,580000,550000,520000]
+                #     })
+                    st.info("No vendor spend data for selected range.")
                 data = top.rename(columns={'VENDOR_NAME':'Vendor','SPEND':'Spend'})
                 alt_bar(data, x='Vendor', y='Spend', title=None, horizontal=True, color='#22C55E', height=280)
             except Exception as e:
