@@ -795,32 +795,61 @@ def _load_user_chat_dates() -> list:
  
         WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
  
-        sql = f"""
-           SELECT
-                distinct [ChatDate],
-                count(*) as QueryCount
-            FROM {WH_TBL}
-            WHERE UPPER(Username) = UPPER('{current_user}') AND [Action_Type] IN ('GENIE_QUERY')
-            group by [ChatDate]
-            order by [ChatDate] desc;
-        """
- 
+        # Try to fetch a real timestamp column (LoggedAt / CreatedAt / Logged_At).
+        # We probe with a lightweight query first; if none exist we fall back to ChatDate.
+        _ts_col = None
+        try:
+            _probe_df = run_warehouse_df(f"SELECT TOP 1 * FROM {WH_TBL}")
+            if _probe_df is not None and not _probe_df.empty:
+                _candidates = ["LoggedAt", "Logged_At", "CreatedAt", "Created_At",
+                               "EventTime", "ActionTime", "InsertedAt", "Inserted_At",
+                               "Timestamp", "ActionDate", "Action_Date"]
+                for _c in _candidates:
+                    if _c in _probe_df.columns:
+                        _ts_col = _c
+                        break
+        except Exception:
+            _ts_col = None
+
+        if _ts_col:
+            sql = f"""
+               SELECT
+                    [ChatDate],
+                    count(*) as QueryCount,
+                    MAX([{_ts_col}]) as LastMessageAt
+                FROM {WH_TBL}
+                WHERE UPPER(Username) = UPPER('{current_user}') AND [Action_Type] IN ('GENIE_QUERY')
+                group by [ChatDate]
+                order by [ChatDate] desc;
+            """
+        else:
+            sql = f"""
+               SELECT
+                    [ChatDate],
+                    count(*) as QueryCount
+                FROM {WH_TBL}
+                WHERE UPPER(Username) = UPPER('{current_user}') AND [Action_Type] IN ('GENIE_QUERY')
+                group by [ChatDate]
+                order by [ChatDate] desc;
+            """
+
         df = run_warehouse_df(sql)
- 
+
         if df is None or df.empty:
- 
+
             return []
- 
+
         return [
- 
+
             {
- 
+
                 "ChatDate": (str(row.get("ChatDate") or "")),
-                "count": int(row.get("QueryCount") or 0)
+                "count": int(row.get("QueryCount") or 0),
+                "last_message_at": str(row.get("LastMessageAt") or "") if _ts_col else ""
             }
- 
+
             for _, row in df.iterrows()
- 
+
         ]
  
     except Exception as e:
@@ -5454,13 +5483,26 @@ if st.session_state.get('page') == 'genie':
                             chat_date = item["ChatDate"]
                             freq = item.get("count", 0)
 
-                            # Calculate how long ago this chat date was
+                            # Calculate how long ago this chat was
+                            # Prefer real timestamp (last_message_at) for accuracy;
+                            # fall back to ChatDate (midnight) if not available.
                             try:
-                                _chat_dt = datetime.strptime(str(chat_date).strip()[:10], "%Y-%m-%d")
+                                _last_msg = item.get("last_message_at", "")
+                                if _last_msg and str(_last_msg) not in ("", "None", "nan"):
+                                    try:
+                                        _chat_dt = datetime.fromisoformat(str(_last_msg).strip())
+                                    except ValueError:
+                                        _chat_dt = datetime.strptime(str(_last_msg).strip()[:19], "%Y-%m-%d %H:%M:%S")
+                                else:
+                                    # Fallback: use ChatDate at midnight (less precise)
+                                    _chat_dt = datetime.strptime(str(chat_date).strip()[:10], "%Y-%m-%d")
                                 _now = datetime.now()
-                                _diff_hours = int((_now - _chat_dt).total_seconds() // 3600)
-                                if _diff_hours < 1:
+                                _diff_minutes = int((_now - _chat_dt).total_seconds() // 60)
+                                _diff_hours = _diff_minutes // 60
+                                if _diff_minutes < 1:
                                     _time_ago = "just now"
+                                elif _diff_minutes < 60:
+                                    _time_ago = f"{_diff_minutes}m ago"
                                 elif _diff_hours < 24:
                                     _time_ago = f"{_diff_hours}h ago"
                                 elif _diff_hours < 48:
