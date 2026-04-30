@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 
 from config import Config
+import config
 from db_service import run_warehouse_non_query, run_warehouse_df
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,31 @@ CREATE TABLE [{WH}].[DATA_VALIDATION_RESULTS] (
     RUN_AT         VARCHAR(30)  NOT NULL
 )
 """
+_DDL_LONG_TERM_MEMORY = f"""
+CREATE TABLE [{WH}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}](
+                    ChatId            BIGINT IDENTITY NOT NULL,
+                    SessionId         VARCHAR(64)  NOT NULL,
+                    Username          VARCHAR(100) NOT NULL,
+                    user_id           VARCHAR(64)  NOT NULL,
+                    Question          VARCHAR(MAX) NOT NULL,
+                    AnswerSummary     VARCHAR(MAX) NULL,
+                    FullAnswer        VARCHAR(MAX) NULL,
+                    Context_Hash      VARCHAR(64)  NOT NULL,
+                    Sql_Query         VARCHAR(MAX) NULL,
+                    Tables_Used       VARCHAR(1000) NULL,
+                    Filters_Applied   VARCHAR(1000) NULL,
+                    Relevance_Score   FLOAT NULL,
+                    Usage_Count       INT NULL,
+                    Last_Accessed_At  DATETIME2(6) NULL,
+                    CacheKey          VARCHAR(128) NULL,
+                    Frequency         INT NOT NULL,
+                    Action_Type       VARCHAR(50) NOT NULL,
+                    Action_Details    VARCHAR(MAX) NULL,
+                    ChatDate          DATE NOT NULL,
+                    CreatedAt         DATETIME2(6) NOT NULL,
+                    UpdatedAt         DATETIME2(6) NOT NULL
+)
+"""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -141,6 +167,7 @@ def ensure_warehouse_tables(force: bool = False) -> dict[str, str]:
         (Config.SAVED_INSIGHTS_TABLE, _DDL_SAVED_INSIGHTS),
         (Config.CACHE_TABLE_NAME,     _DDL_QUERY_CACHE),
         ("DATA_VALIDATION_RESULTS",   _DDL_VALIDATION),
+        (Config.GENIE_CONTEXT_MEMORY_TABLE, _DDL_LONG_TERM_MEMORY),
     ]
 
     results: dict[str, str] = {}
@@ -160,6 +187,7 @@ def get_table_status() -> dict[str, bool]:
             Config.SAVED_INSIGHTS_TABLE,
             Config.CACHE_TABLE_NAME,
             "DATA_VALIDATION_RESULTS",
+            Config.GENIE_CONTEXT_MEMORY_TABLE,
         ]
     }
 

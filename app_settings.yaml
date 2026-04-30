@@ -105,6 +105,7 @@ naming_conventions:
   saved_insights_table: "SAVED_INSIGHTS"
   cache_table: "QUERY_RESULT_CACHE"
   data_validation_table: "DATA_VALIDATION_RESULTS"
+  genie_context_memory_table: "GENIE_CONTEXT_MEMORY"
 
 # ---------------------------------------------------------------------------
 # Feature flags
@@ -128,3 +129,17 @@ testing:
   integration_db_check: true
   integration_ai_check: true
   integration_cache_check: true
+
+memory:
+  short_term:
+    enabled: true
+    max_messages: 10
+    window_minutes: 15
+
+  long_term:
+    enabled: true
+    max_contexts: 5000
+    table: genie_context_memory
+
+  genie:
+    context_window_size: 5

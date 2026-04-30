@@ -16,10 +16,12 @@ import logging
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from datetime import date, timedelta, datetime  
 import uuid
 from typing import Optional
+from auto_suspend import inject_idle_timer
+from genie_middleware import set_log_context, log_event
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -115,6 +117,7 @@ def archive_session_to_longterm_memory(session_summary: str = ""):
         "key_topics": _extract_key_topics(st.session_state.genie_queries)
     }
     st.session_state.genie_previous_sessions.append(session_obj)
+    print(f"Initialized new Genie session: {st.session_state}")
     if len(st.session_state.genie_previous_sessions) > 2:
         st.session_state.genie_previous_sessions = st.session_state.genie_previous_sessions[-2:]
     logger.info(f"Session {st.session_state.genie_session_id} archived to long-term memory")
@@ -141,6 +144,7 @@ def get_session_context_for_prompt() -> str:
         for q in st.session_state.genie_queries[-3:]:
             context += f"- {q['question']}\n"
         context += "\n---\n\n"
+    print(f"Initialized new Genie session: {st.session_state}")
     return context
 
 
@@ -167,40 +171,6 @@ def _extract_key_topics(queries: list) -> list:
     return list(topics)[:3]
 
 
-def display_session_history_sidebar():
-    """Display last 2 sessions in Streamlit sidebar."""
-    _initialize_genie_session()
-    with st.sidebar:
-        st.markdown("---")
-        st.subheader("Session History")
-        if st.session_state.genie_previous_sessions:
-            for i, session in enumerate(st.session_state.genie_previous_sessions[-2:], 1):
-                session_id_short = session.get('session_id', 'Unknown')[:25]
-                with st.expander(f"Session {i}: {session_id_short}..."):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Queries", session.get('query_count', 0))
-                    with col2:
-                        topics = session.get('key_topics', [])
-                        st.write(f"**Topics:** {', '.join(topics) if topics else 'General'}")
-                    st.write("**Questions Asked:**")
-                    for q in session.get('queries', [])[:3]:
-                        st.write(f"- {q}")
-                    if len(session.get('queries', [])) > 3:
-                        st.text(f"... and {len(session['queries']) - 3} more")
-        else:
-            st.info("No previous sessions")
-
-# ---------- Dependencies Check ----------
-try:
-    import streamlit as st
-    import pandas as pd
-    import altair as alt
-    import numpy as np
-except ImportError as e:
-    st.error(f"Missing dependency: {e}. Please install required packages: streamlit, pandas, altair, numpy, Fabric-snowpark-python")
-    st.stop()
-
 # ---------- Page Config ----------
 # NOTE: Replace PAGE_ICON_URL with a transparent‑background YASH logo
 # hosted at a URL accessible from Fabric for best visual results.
@@ -211,7 +181,6 @@ st.set_page_config(
     layout="wide",
     page_icon=PAGE_ICON_URL,
 )
-display_session_history_sidebar()
 # ---------- Fabric Session ----------
 # Session object is created immediately (no network call — just builds the object).
 # All DB work is deferred until after Streamlit binds its port, so Azure's 230s
@@ -393,13 +362,36 @@ apply_custom_theme_picker(link_text="BG")
 
 # Auto-suspend idle session (req 14)
 # scripts/ is on sys.path (added at top of file) so this is a plain module import
-from auto_suspend import inject_idle_timer
+
 inject_idle_timer()
 
 
 def _sql_escape(s: str) -> str:
     """Escape single quotes for SQL string literal."""
     return (s or "").replace("'", "''")
+
+def _extract_sql_metadata(sql_text: str) -> tuple[str, str]:
+    """Extract table names and WHERE clause snippet from SQL."""
+    if not sql_text:
+        return "", ""
+
+    tables = []
+    for match in re.findall(r"\b(?:FROM|JOIN)\s+([A-Za-z0-9_\.\[\]]+)", sql_text, flags=re.IGNORECASE):
+        tbl = (match or "").strip()
+        if tbl and tbl not in tables:
+            tables.append(tbl)
+
+    where_match = re.search(
+        r"\bWHERE\b(.*?)(?:\bGROUP\s+BY\b|\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|$)",
+        sql_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    filters = ""
+    if where_match:
+        filters = " ".join((where_match.group(1) or "").split())
+        filters = filters[:900]
+
+    return ",".join(tables), filters
 
 
 saved_insights_TABLE = f"{Config.WAREHOUSE_SCHEMA}.{Config.SAVED_INSIGHTS_TABLE}"
@@ -594,7 +586,6 @@ def _save_insight(
     Uses only the columns present in your table:
       QUESTION, TITLE, ANALYSIS_TYPE, CREATED_BY, CREATED_AT (date), PAGE
     """
-    import streamlit as st
 
     q = (question or "").strip()
     t = (title or "").strip()
@@ -652,7 +643,6 @@ def _get_saved_insights_for_user(
     Return recent saved insights for the current user, optionally filtered by page.
     Uses columns available in dbo.saved_insights.
     """
-    import streamlit as st
 
     try:
         current_user = (_get_current_user_raw() or "UNKNOWN").strip()
@@ -707,6 +697,19 @@ def _get_saved_insights_for_user(
 
 GENIE_HISTORY_TABLE = f"[{DB}].[{SCHEMA}].[genie_question_history]"
 
+# ========== Utilities ==========
+
+def compute_range_preset(preset: str):
+    today = date.today()
+    if preset == "Last 30 Days":
+        return today - timedelta(days=30), today
+    if preset == "QTD":
+        start = date(today.year, ((today.month - 1)//3)*3 + 1, 1)
+        return start, today
+    if preset == "YTD":
+        return date(today.year, 1, 1), today
+    return today.replace(day=1), today  # Current month
+
 def _get_frequent_questions(n: int = 10):
     """Top n questions by total frequency across all users. Groups by normalized_query."""
     try:
@@ -731,7 +734,6 @@ def _get_frequent_questions(n: int = 10):
     except Exception as e:
         # Optional: surface the SQL to debug quickly
         try:
-            import streamlit as st
             st.error(f"Load frequent questions failed: {e}")
             st.code(sql, language="sql")
         except Exception:
@@ -781,19 +783,175 @@ def _get_frequent_questions_by_user(n: int = 10):
     except Exception:
         return []
 
+def _load_user_chat_dates() -> list:
+ 
+    """Fetches distinct chat dates for the current user."""
+ 
+    try:
+ 
+        current_user = _get_current_user_raw() or "UNKNOWN"
+ 
+        user_esc = _sql_escape(current_user)
+ 
+        WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
+ 
+        # Try to fetch a real timestamp column (LoggedAt / CreatedAt / Logged_At).
+        # We probe with a lightweight query first; if none exist we fall back to ChatDate.
+        _ts_col = None
+        try:
+            _probe_df = run_warehouse_df(f"SELECT TOP 1 * FROM {WH_TBL}")
+            if _probe_df is not None and not _probe_df.empty:
+                _candidates = ["LoggedAt", "Logged_At", "CreatedAt", "Created_At",
+                               "EventTime", "ActionTime", "InsertedAt", "Inserted_At",
+                               "Timestamp", "ActionDate", "Action_Date"]
+                for _c in _candidates:
+                    if _c in _probe_df.columns:
+                        _ts_col = _c
+                        break
+        except Exception:
+            _ts_col = None
 
-# ========== Utilities ==========
+        if _ts_col:
+            sql = f"""
+               SELECT
+                    [ChatDate],
+                    count(*) as QueryCount,
+                    MAX([{_ts_col}]) as LastMessageAt
+                FROM {WH_TBL}
+                WHERE UPPER(Username) = UPPER('{current_user}') AND [Action_Type] IN ('GENIE_QUERY')
+                group by [ChatDate]
+                order by [ChatDate] desc;
+            """
+        else:
+            sql = f"""
+               SELECT
+                    [ChatDate],
+                    count(*) as QueryCount
+                FROM {WH_TBL}
+                WHERE UPPER(Username) = UPPER('{current_user}') AND [Action_Type] IN ('GENIE_QUERY')
+                group by [ChatDate]
+                order by [ChatDate] desc;
+            """
 
-def compute_range_preset(preset: str):
-    today = date.today()
-    if preset == "Last 30 Days":
-        return today - timedelta(days=30), today
+        df = run_warehouse_df(sql)
+
+        if df is None or df.empty:
+
+            return []
+
+        return [
+
+            {
+
+                "ChatDate": (str(row.get("ChatDate") or "")),
+                "count": int(row.get("QueryCount") or 0),
+                "last_message_at": str(row.get("LastMessageAt") or "") if _ts_col else ""
+            }
+
+            for _, row in df.iterrows()
+
+        ]
+ 
+    except Exception as e:
+ 
+        st.warning(f"Could not load query history: {e}")
+ 
+        return []
+
+def generate_context_summary(
+    question: str,
+    full_answer: str,
+    sql_query: str
+) -> str:
+    """
+    Uses AI to generate a concise 2–3 line context summary
+    based on the user's question, executed SQL, and full analytical answer.
+    Intended for chat history, memory, or context recall.
+    """
+
+    try:
+        prompt = f"""
+
+            You are generating a short-term analytical memory.
+
+            Create a 2–3 sentence CONTEXT SUMMARY.
+
+            INPUT:
+            Question:
+            {question}
+
+            Answer:
+            {full_answer}
+
+            SQL Query:
+            {sql_query}
+
+            RULES:
+            - Ignore recommendations and prescriptive guidance
+            - Capture:
+            1) Analytical intent
+            2) Data analyzed
+            3) Key conclusion
+            - No bullet points, no numbers unless critical
+            - Neutral, factual language
+            - Max 3 sentences
+            - Output only the summary text
+        """
+
+        summary = cortex_complete(prompt, temperature=0.2)
+
+        return (summary or "").strip()
+
+    except Exception as e:
+        return f"Summary generation failed: {str(e)}"
+
+def _load_queries_by_date(chat_date: str) -> list:
+    """Fetches all queries for a specific date."""
+    try:
+        current_user = _get_current_user_raw() or "UNKNOWN"
+        WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
+        
+        sql = f"""
+           SELECT
+                [Question],
+                [AnswerSummary],
+                [FullAnswer],
+                [Sql_Query],
+                [Action_Type],
+                [Action_Details],
+                [ChatDate]
+            FROM {WH_TBL}
+            WHERE UPPER(Username) = UPPER('{current_user}') AND [ChatDate] = '{chat_date}' AND [Action_Type] IN ('GENIE_QUERY');
+        """
+        
+        df = run_warehouse_df(sql)
+        
+        if df is None or df.empty:
+            return []
+        
+        return [
+            {
+                "question": (str(row.get("Question") or "")).strip(),
+                "summary": (str(row.get("AnswerSummary") or "")).strip(),
+                "full_answer": (str(row.get("FullAnswer") or "")).strip(),
+                "sql": (str(row.get("Sql_Query") or "")).strip(),
+                "action_type": (str(row.get("Action_Type") or "")).strip(),
+                "action_details": (str(row.get("Action_Details") or "")).strip()
+            }
+            for _, row in df.iterrows()
+        ]
+    except Exception as e:
+        st.warning(f"Could not load chat history for date {chat_date}: {e}")
+        return []
+
     if preset == "QTD":
         start = date(today.year, ((today.month - 1)//3)*3 + 1, 1)
         return start, today
     if preset == "YTD":
         return date(today.year, 1, 1), today
     return today.replace(day=1), today  # Current month
+
+
 
 def sql_date(d: date) -> str:
     return f"'{d.strftime('%Y-%m-%d')}'"
@@ -927,25 +1085,35 @@ def _get_ai_invoice_suggestion(invoice_number: str, inv_row: dict, status_histor
 
 
 def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> str:
-    """Generate prescriptive insights using Azure OpenAI."""
+    """Generate prescriptive insights using Azure OpenAI with middleware logging."""
     
-    # CRITICAL FIX: Ensure session is initialized before proceeding
+    start_time = time.time()
+
+    # Ensure session initialized
     if "genie_session_initialized" not in st.session_state:
         _initialize_genie_session()
     
     data_parts = []
+    executed_sqls = []
+
     for block in content or []:
         if block.get("type") != "sql":
             continue
+
         sql = block.get("statement", "")
         if not sql.strip():
             continue
+
         try:
             df = run_df_func(sql)
+            executed_sqls.append(sql)
+
             if df is None or df.empty:
                 continue
+
             head = df.head(40)
             data_parts.append(head.to_string(index=False, max_colwidth=40))
+
         except Exception as e:
             logger.warning(f"Failed to execute SQL block: {e}")
             continue
@@ -954,10 +1122,11 @@ def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> 
         return ""
     
     data_str = "\n\n---\n\n".join(data_parts)
+
+    # Limit payload size
     if len(data_str) > 15000:
         data_str = data_str[:15000] + "\n(truncated)"
     
-    # FIX: Single f-string with explicit newlines (no adjacent f-strings)
     prompt = (
         "You are a procurement business analyst. The user asked a question "
         "and received the following data from our analytics. "
@@ -972,12 +1141,48 @@ def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> 
     )
     
     try:
-        # ISSUE #2 FIX: Include memory context
         result = cortex_complete(prompt, temperature=0.3, include_memory=True)
+
+        duration = round(time.time() - start_time, 3)
+
         if result and len(result.strip()) > 20:
-            save_query_to_session_memory(question, "SELECT (insight)", result[:200])
-            return result.strip()
+            result_clean = result.strip()
+
+            # Save to session memory (existing logic)
+            save_query_to_session_memory(
+                question,
+                " | ".join(executed_sqls)[:500],
+                result_clean[:200]
+            )
+
+            # 🔥 Middleware Logging (SUCCESS)
+            log_event("AI_INSIGHT", {
+                "summary": result_clean[:200],
+                "full_answer": result_clean,
+                "sql": " | ".join(executed_sqls)[:1000],
+                "relevance": 0.95,
+                "details": f"LLM response time: {duration}s"
+            })
+
+            return result_clean
+
+        # 🔹 Edge case: empty/weak response
+        log_event("AI_EMPTY", {
+            "summary": "LLM returned empty/weak response",
+            "details": f"Time: {duration}s",
+            "relevance": 0.2
+        })
+
     except Exception as e:
+        duration = round(time.time() - start_time, 3)
+
+        # 🔥 Middleware Logging (ERROR)
+        log_event("AI_ERROR", {
+            "summary": "LLM failed",
+            "details": f"{str(e)} | Time: {duration}s",
+            "relevance": 0.0
+        })
+
         logger.error(f"Prescriptive insights failed: {e}")
     
     return ""
@@ -1373,6 +1578,7 @@ def load_clean_ui_light():
       height: 120px !important; max-height: 120px !important; width: auto !important;
       object-fit: contain !important;
       display: block;
+      transform: translateY(-42px);
     }
 
     /* Preset buttons (Last 30 Days / QTD / YTD / Custom) — same size, one line */
@@ -1918,6 +2124,22 @@ def load_clean_ui_light():
     }
     .st-key-btn_download_csv button:hover {
     background-color: #1D4ED8 !important;
+    }
+    /* Genie chat history resume buttons - screenshot style */
+    div[class*="st-key-resume_query_"] button {
+      background: #2563EB !important;
+      color: #FFFFFF !important;
+      border: 1px solid #1D4ED8 !important;
+      border-radius: 10px !important;
+      min-height: 42px !important;
+      font-size: 14px !important;
+      font-weight: 700 !important;
+      box-shadow: 0 1px 2px rgba(37, 99, 235, 0.20) !important;
+    }
+    div[class*="st-key-resume_query_"] button:hover {
+      background: #1D4ED8 !important;
+      border-color: #1E40AF !important;
+      color: #FFFFFF !important;
     }
     /* Prev (Grey) */
     .st-key-inv_prev button {
@@ -4561,6 +4783,16 @@ if st.session_state.get('page') == 'genie':
         st.session_state.sidebar_expanded = True
     if "genie_input_version" not in st.session_state:
         st.session_state.genie_input_version = 0
+    if "show_loaded_chat_history" not in st.session_state:
+        st.session_state.show_loaded_chat_history = False
+    if "loaded_chat_history" not in st.session_state:
+        st.session_state.loaded_chat_history = []
+    if "loaded_chat_date" not in st.session_state:
+        st.session_state.loaded_chat_date = ""
+    if "query_filter_days" not in st.session_state:
+        st.session_state.query_filter_days = 7
+    if "show_conversation_history" not in st.session_state:
+        st.session_state.show_conversation_history = True
 
     # Define quick analysis options - match YAML verified queries; icons as SVG (screenshot-style)
     _BAR_CHART_SVG = '''<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="14" width="4" height="6" rx="1" fill="white"/><rect x="10" y="10" width="4" height="10" rx="1" fill="white"/><rect x="16" y="6" width="4" height="14" rx="1" fill="white"/></svg>'''
@@ -4737,6 +4969,10 @@ if st.session_state.get('page') == 'genie':
     
     def process_genie_query(query: str, analysis_type: str = "custom"):
         """Process a query, store response in recent analyses, return response."""
+        current_user = _get_current_user_raw() or "UNKNOWN"
+        session_id = st.session_state.get("genie_session_id", "unknown")
+        set_log_context(question=query, user=current_user, session_id=session_id)
+
         # Add user message
         st.session_state.genie_messages.append({
             "role": "user",
@@ -4760,33 +4996,97 @@ if st.session_state.get('page') == 'genie':
         _append_genie_question(query, analysis_type)
         
         #CACHE THE RESULT - Save to QUERY_RESULT_CACHE warehouse table
+        cache_key_for_log = ""
         try:
-            if isinstance(response, dict) and 'message' in response:
-                # Extract SQL from response structure
-                result_sql = ''
+            # Extract complete middleware payload for memory logging.
+            result_sql = ""
+            result_summary = ""
+            result_full_answer = ""
+            tables_used = ""
+            filters_applied = ""
+            details = f"analysis_type={analysis_type}"
+            sql_block_count = 0
+
+            if isinstance(response, dict) and "message" in response:
                 try:
-                    content = response.get('message', {}).get('content', [])
+                    content = response.get("message", {}).get("content", [])
+                    sql_statements = []
                     if content and isinstance(content, list):
-                        # First item should be the SQL statement
                         for item in content:
-                            if isinstance(item, dict) and item.get('type') == 'sql':
-                                result_sql = item.get('statement', '')
-                                break
+                            if isinstance(item, dict) and item.get("type") == "sql":
+                                statement = str(item.get("statement", "")).strip()
+                                if statement:
+                                    sql_statements.append(statement)
+
+                        text_parts = [
+                            str(item.get("text", "")).strip()
+                            for item in content
+                            if isinstance(item, dict) and item.get("type") == "text"
+                        ]
+                        if text_parts:
+                            result_full_answer = "\n\n".join([x for x in text_parts if x])
+                            result_summary = generate_context_summary(
+                                        question=query,
+                                        full_answer=result_full_answer,
+                                        sql_query=result_sql
+                                    )[:20000]
+                    if sql_statements:
+                        sql_block_count = len(sql_statements)
+                        result_sql = "\n\n-- NEXT BLOCK --\n\n".join(sql_statements)
+                        tables_set = []
+                        filter_parts = []
+                        for statement in sql_statements:
+                            stmt_tables, stmt_filters = _extract_sql_metadata(statement)
+                            if stmt_tables:
+                                for tbl in stmt_tables.split(","):
+                                    t = tbl.strip()
+                                    if t and t not in tables_set:
+                                        tables_set.append(t)
+                            if stmt_filters:
+                                filter_parts.append(stmt_filters)
+                        tables_used = ",".join(tables_set)
+                        filters_applied = " || ".join(filter_parts)[:900]
                 except Exception:
                     pass
-                
-                # Re-execute the query to get the dataframe for caching
-                if result_sql:
-                    try:
-                        result_df = run_df(result_sql)
-                        cache_set(
-                            question=query,
-                            sql=result_sql,
-                            result_df=result_df
-                        )
-                        logger.info(f"✓ Cached result for: {query[:60]}")
-                    except Exception as cache_error:
-                        logger.warning(f"Could not cache results: {cache_error}")
+
+            # Re-execute first SQL statement (if any) to keep cache behavior.
+            first_sql = result_sql.split("\n\n-- NEXT BLOCK --\n\n", 1)[0] if result_sql else ""
+            if first_sql:
+                try:
+                    result_df = run_df(first_sql)
+                    cache_set(
+                        question=query,
+                        sql=first_sql,
+                        result_df=result_df
+                    )
+                    cache_key_for_log = f"genie:{hash(query.strip().lower())}"
+                    logger.info(f"✓ Cached result for: {query[:60]}")
+                except Exception as cache_error:
+                    logger.warning(f"Could not cache results: {cache_error}")
+
+            # Ensure every Genie question is persisted to contextual memory.
+            if not result_summary and query:
+                result_summary = query[:200]
+            if not result_full_answer and isinstance(response, dict):
+                result_full_answer = str(response)[:4000]
+            details = (
+                f"{details}; has_message={bool(isinstance(response, dict) and 'message' in response)}; "
+                f"sql_blocks={sql_block_count}"
+            )
+
+            log_event("GENIE_QUERY", {
+                "summary": result_summary,
+                "full_answer": result_full_answer,
+                "sql": result_sql,
+                "tables": tables_used,
+                "filters": filters_applied,
+                "details": details,
+                "cache_key": cache_key_for_log,
+                "relevance": 0.9 if result_sql else 0.5,
+            })
+            # Store summary in session_state so caller can append to chat bubble view
+            st.session_state["_last_genie_summary"] = result_summary
+            st.session_state["_last_genie_sql"] = result_sql
         except Exception as outer_error:
             logger.warning(f"Cache operation failed: {outer_error}")
 
@@ -4988,16 +5288,295 @@ if st.session_state.get('page') == 'genie':
                 else:
                     st.caption("Ask questions to see most frequent across all users.")
         # Removed stray closing div that could render as text
-    
+
+    current_user = _get_current_user_raw() or "Unknown User"
+    user_esc = _sql_escape(current_user)
+
     # RIGHT COLUMN: AI Assistant
     with right_col:
         with st.container(border=True):
-            st.markdown("""
-            <div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:16px;">AI Assistant</div>
-            """, unsafe_allow_html=True)
+
+            # Header row with title and buttons
+            header_col, btn1, btn2, btn3, btn4 = st.columns([2, 1, 1, 1, 1], gap="small")
             
-            # Chat area
-            if st.session_state.show_analysis and st.session_state.analyst_response:
+            with header_col:
+                st.markdown(
+                    """
+                    <div style="font-size: 20px; font-weight: 800; color: #0F172A; padding-top: 8px;">AI Assistant</div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            
+            with btn1:
+                if st.button("Chats", use_container_width=True, key="btn_chats"):
+                    st.session_state.show_conversation_history = True
+                    st.rerun()
+            with btn2:
+                if st.button("Summarize", use_container_width=True, key="btn_summarize"):
+                    session_qs = st.session_state.get("genie_queries", [])
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    db_qs = _load_queries_by_date(today_str)
+                    all_questions = []
+                    seen = set()
+                    for q in db_qs:
+                        txt = q.get("question", "").strip()
+                        if txt and txt not in seen:
+                            seen.add(txt)
+                            all_questions.append({"question": txt, "answer": q.get("full_answer") or q.get("summary", "")})
+                    for q in session_qs:
+                        txt = q.get("question", "").strip()
+                        if txt and txt not in seen:
+                            seen.add(txt)
+                            all_questions.append({"question": txt, "answer": q.get("summary", "")})
+                    if all_questions:
+                        with st.spinner("Generating session summary..."):
+                            qa_block = "\n\n".join(
+                                f"Q: {item['question']}\nA: {item['answer']}"
+                                for item in all_questions if item.get("question")
+                            )
+                            summary_prompt = f"""You are an AI analyst summarising a procurement analytics session.\n\nThe user asked the following questions today:\n{qa_block}\n\nGenerate a concise executive SESSION SUMMARY with these sections:\n1. **Session Overview** - What topics and data areas did the user explore? (2-3 sentences)\n2. **Key Findings** - The most important data insights surfaced. (3-5 bullet points)\n3. **Patterns & Themes** - Recurring themes, vendors, time periods, or anomalies. (2-3 sentences)\n4. **Suggested Next Steps** - Follow-up questions or actions that would add value. (2-3 bullet points)\n\nBe concise and factual. Output only the summary."""
+                            result = cortex_complete(summary_prompt, temperature=0.3)
+                            st.session_state["session_summary_text"] = (result or "").strip()
+                            st.session_state["show_session_summary"] = True
+                    else:
+                        st.info("No questions found for today's session to summarize.")
+            with btn3:
+                # Build AI-summarised MD; cache in session_state so it only regenerates once
+                if "export_md_content" not in st.session_state:
+                    chat_dates = _load_user_chat_dates()
+                    if chat_dates:
+                        md_lines = ["# Chat History — AI Summary\n"]
+                        for item in chat_dates:
+                            chat_date_text = item.get("ChatDate", "")
+                            freq = item.get("count", 0)
+                            md_lines.append(f"## {chat_date_text}  _(asked {freq} time{'s' if freq != 1 else ''})_\n")
+                            queries = _load_queries_by_date(chat_date_text)
+                            if queries:
+                                for idx, q in enumerate(queries, 1):
+                                    question = q.get("question", "").strip()
+                                    full_answer = q.get("full_answer", "").strip()
+                                    sql = q.get("sql", "").strip()
+                                    summary = q.get("summary", "").strip()
+                                    # Use stored summary if available, otherwise generate via AI
+                                    if not summary and (question or full_answer):
+                                        summary = generate_context_summary(question, full_answer, sql)
+                                    md_lines.append(f"### Q{idx}: {question}\n")
+                                    md_lines.append(f"{summary if summary else '_No summary available._'}\n")
+                            else:
+                                md_lines.append("_No query details found for this date._\n")
+                        st.session_state.export_md_content = "\n".join(md_lines)
+                    else:
+                        st.session_state.export_md_content = None
+
+                if st.session_state.get("export_md_content"):
+                    st.download_button(
+                        label="Export MD",
+                        data=st.session_state.export_md_content,
+                        file_name="chat_history.md",
+                        mime="text/markdown",
+                        use_container_width=True,
+                        key="btn_export"
+                    )
+                else:
+                    if st.button("Export MD", use_container_width=True, key="btn_export_empty"):
+                        st.info("No chat history to export.")
+
+            
+
+
+            with btn4:
+                if st.button("Clear", use_container_width=True, key="btn_clear"):
+                    st.session_state.show_analysis = False
+                    st.session_state.analyst_response = None
+                    st.session_state.show_conversation_history = False
+                    st.rerun()
+
+            st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+
+            # Session summary panel - full width, shown below the button row
+            if st.session_state.get("show_session_summary") and st.session_state.get("session_summary_text"):
+                import re as _re_sum
+                _sum_html = st.session_state["session_summary_text"].replace("\n", "<br/>")
+                _sum_html = _re_sum.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', _sum_html)
+                st.markdown(f"""
+                <div style="background:#f0f9ff;border-radius:12px;border-left:4px solid #0284c7;padding:20px 24px;margin-bottom:16px;">
+                    <div style="font-size:15px;font-weight:800;color:#0369a1;margin-bottom:12px;">Session Summary</div>
+                    <div style="font-size:13px;color:#1e293b;line-height:1.8;">{_sum_html}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                if st.button("Close Summary", key="close_summary"):
+                    st.session_state["show_session_summary"] = False
+                    st.rerun()
+
+            # Display loaded chat history from a specific date - takes priority
+            if st.session_state.get("show_loaded_chat_history", False):
+                chat_date = st.session_state.get("loaded_chat_date", "")
+                chat_history = st.session_state.get("loaded_chat_history", [])
+                
+                if chat_history:
+                    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+                    # Header with back button
+                    col_back, col_title, col_spacer = st.columns([1, 4, 1])
+                    with col_back:
+                        if st.button("← Back", key="back_from_chat_history"):
+                            st.session_state["show_loaded_chat_history"] = False
+                            st.session_state["loaded_chat_history"] = []
+                            st.session_state["loaded_chat_date"] = ""
+                            st.rerun()
+                    with col_title:
+                        st.markdown(f"""
+                        <div style="font-size:18px;font-weight:800;color:#0F172A;">Chat History - {chat_date}</div>
+                        """, unsafe_allow_html=True)
+                    
+                    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+                    # Build full chat bubble HTML in one block
+                    chat_bubbles_html = '<div style="display:flex;flex-direction:column;gap:16px;padding:4px 0;">'
+                    for idx, query_item in enumerate(chat_history):
+                        question = query_item.get("question", "").strip()
+                        summary  = query_item.get("summary", "").strip()
+                        # User bubble - right aligned, blue
+                        if question:
+                            chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-end;">
+                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-right:4px;">You</div>
+                                <div style="background:#3B5BDB;color:#fff;border-radius:18px 18px 4px 18px;
+                                            padding:12px 16px;max-width:80%;font-size:13px;font-weight:500;line-height:1.5;">
+                                    {question}
+                                </div>
+                            </div>'''
+                        # AI bubble - left aligned, light grey
+                        if summary:
+                            chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-start;">
+                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-left:4px;">AI Assistant</div>
+                                <div style="background:#F1F5F9;color:#1e293b;border-radius:18px 18px 18px 4px;
+                                            padding:12px 16px;max-width:85%;font-size:13px;line-height:1.6;">
+                                    {summary}
+                                </div>
+                            </div>'''
+                    chat_bubbles_html += '</div>'
+                    st.markdown(chat_bubbles_html, unsafe_allow_html=True)
+                    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+
+            # Show resume conversation section only when NOT viewing chat history
+            else:
+                # Blue background section
+                st.markdown(
+                    """
+                    <div style="background-color: #EEF4FF; border-radius: 12px; padding: 20px; margin-bottom: 20px;">
+                        <h2 style="font-size: 20px; font-weight: 800; color: #0F172A; margin: 0 0 8px 0;">Resume a previous conversation</h2>
+                        <p style="font-size: 14px; color: #475569; margin: 0;">View chats from your recent activity. Pick one to continue, or ask a new question.</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                # Show conversation history or empty state
+                if st.session_state.get("show_conversation_history", True):
+                    # Returns list of {"query": ..., "count": ...}
+                    ChatDate = _load_user_chat_dates()
+
+                    if not ChatDate:
+                        st.info("No query history found for your account.")
+                    else:
+                        # Render each query as a card
+                        for i, item in enumerate(ChatDate[:]):  # Show up to 6 cards
+                            chat_date = item["ChatDate"]
+                            freq = item.get("count", 0)
+
+                            # Calculate how long ago this chat was
+                            # Prefer real timestamp (last_message_at) for accuracy;
+                            # fall back to ChatDate (midnight) if not available.
+                            try:
+                                _last_msg = item.get("last_message_at", "")
+                                if _last_msg and str(_last_msg) not in ("", "None", "nan"):
+                                    try:
+                                        _chat_dt = datetime.fromisoformat(str(_last_msg).strip())
+                                    except ValueError:
+                                        _chat_dt = datetime.strptime(str(_last_msg).strip()[:19], "%Y-%m-%d %H:%M:%S")
+                                else:
+                                    # Fallback: use ChatDate at midnight (less precise)
+                                    _chat_dt = datetime.strptime(str(chat_date).strip()[:10], "%Y-%m-%d")
+                                _now = datetime.now()
+                                _diff_minutes = int((_now - _chat_dt).total_seconds() // 60)
+                                _diff_hours = _diff_minutes // 60
+                                if _diff_minutes < 1:
+                                    _time_ago = "just now"
+                                elif _diff_minutes < 60:
+                                    _time_ago = f"{_diff_minutes}m ago"
+                                elif _diff_hours < 24:
+                                    _time_ago = f"{_diff_hours}h ago"
+                                elif _diff_hours < 48:
+                                    _time_ago = "1 day ago"
+                                else:
+                                    _diff_days = _diff_hours // 24
+                                    _time_ago = f"{_diff_days} days ago"
+                            except Exception:
+                                _time_ago = ""
+
+                            # Native Streamlit card - no raw HTML to avoid escaping issues
+                            _is_active = (
+                                st.session_state.get("show_loaded_chat_history", False)
+                                and st.session_state.get("loaded_chat_date") == chat_date
+                            )
+                            _msg_label = str(freq) + " message" + ("s" if freq != 1 else "") + ("  ·  " + _time_ago if _time_ago else "")
+                            _display_title = f"Chat on {chat_date}"
+                            card_col1, card_col2 = st.columns([4.4, 1.6], gap="small")
+                            with card_col1:
+                                _border_style = (
+                                    "border:2px solid #16a34a;border-radius:10px;padding:12px 16px;background:#f0fdf4;"
+                                    if _is_active else
+                                    "border:1px solid #E5E7EB;border-radius:10px;padding:12px 16px;background:#FFFFFF;"
+                                )
+                                if _is_active:
+                                    _active_badge = '<span style="background:#16a34a;color:#fff;border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700;margin-left:8px;">Active</span>'
+                                    st.markdown(
+                                        f'<div style="{_border_style}">'
+                                        f'<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">{_display_title}{_active_badge}</div>'
+                                        f'<div style="font-size:12px;color:#6B7280;">{_msg_label}</div>'
+                                        f'</div>',
+                                        unsafe_allow_html=True
+                                    )
+                                else:
+                                    st.markdown(
+                                        f'<div style="{_border_style}">'
+                                        f'<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">{_display_title}</div>'
+                                        f'<div style="font-size:12px;color:#6B7280;">{_msg_label}</div>'
+                                        f'</div>',
+                                        unsafe_allow_html=True
+                                    )
+                            with card_col2:
+                                st.write("")
+                                if not _is_active:
+                                    if st.button("Resume", key=f"resume_query_{i}", use_container_width=True, type="primary"):
+                                        with st.spinner("Loading chat history..."):
+                                            chat_queries = _load_queries_by_date(chat_date)
+                                            if chat_queries:
+                                                st.session_state["loaded_chat_date"] = chat_date
+                                                st.session_state["loaded_chat_history"] = chat_queries
+                                                st.session_state["show_loaded_chat_history"] = True
+                                            else:
+                                                st.warning(f"No chat history found for {chat_date}")
+                                        st.rerun()
+                            st.write("")
+                else:
+                    # Empty state - Start a Conversation
+                    st.markdown(
+                        """
+                        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; text-align: center;">
+                            <div style="width: 80px; height: 80px; background-color: #DBEAFE; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 20px;">
+                                <span style="font-size: 40px; color: #93C5FD;">+</span>
+                            </div>
+                            <h2 style="font-size: 20px; font-weight: 800; color: #0F172A; margin: 0 0 12px 0;">Start a Conversation</h2>
+                            <p style="font-size: 14px; color: #64748B; margin: 0; max-width: 300px;">Ask questions about your Procurement to Pay data, or select a pre-built analysis from the library.</p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+            st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+
+            # Chat area - show when not viewing loaded chat history
+            if not st.session_state.get("show_loaded_chat_history", False) and st.session_state.show_analysis and st.session_state.analyst_response:
                 response = st.session_state.analyst_response
                 analysis_key = st.session_state.selected_analysis
                 a = QUICK_ANALYSES.get(analysis_key, {})
@@ -5402,23 +5981,6 @@ ORDER BY Sort_Order;
                                         st.error(f"Query error: {e}")
                                         with st.expander("View SQL used"):
                                             st.code(sql, language="sql")
-            else:
-                # Empty state - Start a Conversation (light blue-purple circle, white +, per screenshot)
-                st.markdown("""
-                <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
-                     padding:60px 20px;text-align:center;min-height:300px;">
-                    <div style="width:64px;height:64px;border-radius:50%;background:#dbeafe;
-                         display:flex;align-items:center;justify-content:center;margin-bottom:20px;">
-                        <span style="font-size:28px;font-weight:300;color:#ffffff;">+</span>
-                    </div>
-                    <div style="font-size:18px;font-weight:800;color:#1a1a1a;margin-bottom:8px;">
-                        Start a Conversation
-                    </div>
-                    <div style="font-size:14px;color:#64748b;max-width:400px;">
-                        Ask questions about your Procurement to Pay data, or select a pre-built analysis from the library.
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
             
             # Chat Input at bottom (form so Enter key submits the question)
             st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
@@ -5439,6 +6001,7 @@ ORDER BY Sort_Order;
                 st.session_state.selected_analysis = "custom"
                 st.session_state.last_custom_query = user_query.strip()
                 st.session_state.show_analysis = True
+                st.session_state.show_conversation_history = True
                 st.session_state.genie_input_version = st.session_state.genie_input_version + 1
                 with st.spinner("Analyzing..."):
                     # Cache-first lookup (req 8): check session cache before calling AI
@@ -5457,4 +6020,15 @@ ORDER BY Sort_Order;
                             st.session_state.analyst_response = process_genie_query(user_query)
                     else:
                         st.session_state.analyst_response = process_genie_query(user_query)
+                # If the user is currently viewing a loaded chat history,
+                # append the new Q&A directly into that bubble view so it stays visible
+                if st.session_state.get("show_loaded_chat_history", False):
+                    _new_summary = st.session_state.pop("_last_genie_summary", "") or user_query.strip()
+                    _new_sql = st.session_state.pop("_last_genie_sql", "")
+                    st.session_state["loaded_chat_history"].append({
+                        "question": user_query.strip(),
+                        "summary": _new_summary,
+                        "full_answer": _new_summary,
+                        "sql": _new_sql,
+                    })
                 st.rerun()
