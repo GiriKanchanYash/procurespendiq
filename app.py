@@ -785,78 +785,46 @@ def _get_frequent_questions_by_user(n: int = 10):
         return []
 
 def _load_user_chat_dates() -> list:
- 
-    """Fetches distinct chat dates for the current user."""
- 
-    try:
- 
-        current_user = _get_current_user_raw() or "UNKNOWN"
- 
-        user_esc = _sql_escape(current_user)
- 
-        WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
- 
-        # Try to fetch a real timestamp column (LoggedAt / CreatedAt / Logged_At).
-        # We probe with a lightweight query first; if none exist we fall back to ChatDate.
-        _ts_col = None
-        try:
-            _probe_df = run_warehouse_df(f"SELECT TOP 1 * FROM {WH_TBL}")
-            if _probe_df is not None and not _probe_df.empty:
-                _candidates = ["LoggedAt", "Logged_At", "CreatedAt", "Created_At",
-                               "EventTime", "ActionTime", "InsertedAt", "Inserted_At",
-                               "Timestamp", "ActionDate", "Action_Date"]
-                for _c in _candidates:
-                    if _c in _probe_df.columns:
-                        _ts_col = _c
-                        break
-        except Exception:
-            _ts_col = None
+    """Fetches chat dates and GENIE query counts for the last 7 days."""
 
-        if _ts_col:
-            sql = f"""
-               SELECT
-                    [ChatDate],
-                    count(*) as QueryCount,
-                    MAX([{_ts_col}]) as LastMessageAt
-                FROM {WH_TBL}
-                WHERE UPPER(Username) = UPPER('{current_user}') AND [Action_Type] IN ('GENIE_QUERY')
-                group by [ChatDate]
-                order by [ChatDate] desc;
-            """
-        else:
-            sql = f"""
-               SELECT
-                    [ChatDate],
-                    count(*) as QueryCount
-                FROM {WH_TBL}
-                WHERE UPPER(Username) = UPPER('{current_user}') AND [Action_Type] IN ('GENIE_QUERY')
-                group by [ChatDate]
-                order by [ChatDate] desc;
-            """
+    try:
+        current_user = _get_current_user_raw() or "UNKNOWN"
+        user_esc = _sql_escape(current_user)
+
+        WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
+
+        sql = f"""
+            SELECT
+                [ChatDate],
+                COUNT(*) AS QueryCount,
+                MAX([CreatedAt]) AS LastMessageAt
+            FROM {WH_TBL}
+            WHERE
+                UPPER([Username]) = UPPER('{user_esc}')
+                AND [Action_Type] = 'GENIE_QUERY'
+                AND [ChatDate] >= DATEADD(DAY, -7, CAST(GETDATE() AS DATE))
+            GROUP BY
+                [ChatDate]
+            ORDER BY
+                [ChatDate] DESC;
+        """
 
         df = run_warehouse_df(sql)
 
         if df is None or df.empty:
-
             return []
 
         return [
-
             {
-
-                "ChatDate": (str(row.get("ChatDate") or "")),
-                "count": int(row.get("QueryCount") or 0),
-                "last_message_at": str(row.get("LastMessageAt") or "") if _ts_col else ""
+                "ChatDate": str(row["ChatDate"]),
+                "count": int(row["QueryCount"]),
+                "last_message_at": str(row["LastMessageAt"])
             }
-
             for _, row in df.iterrows()
-
         ]
- 
+
     except Exception as e:
- 
         st.warning(f"Could not load query history: {e}")
- 
         return []
 
 def generate_context_summary(
@@ -2413,7 +2381,7 @@ def _pick_chart_columns(df: pd.DataFrame) -> tuple:
 
 def alt_bar(df, x, y, title: Optional[str]=None, horizontal=False, color="#1459d2", height=320):
     if df is None or df.empty:
-        empty_state("No data for this chart.")
+        # empty_state("No data for this chart.")
         return
     data = df.copy()
     if horizontal:
@@ -4697,11 +4665,11 @@ if st.session_state.get('page','dashboard') == 'dashboard':
                 """
                 top = run_df(top_sql)
                 if top is None or top.empty:
-                    top = pd.DataFrame({
-                        'VENDOR_NAME': ['Globalogistics Corp','Mainframe Solutions','Apex Supplies','Inorbit','Cosewise','iCraft'],
-                        'SPEND': [1200000,880000,600000,580000,550000,520000]
-                    })
-                    st.info("Using sample vendor data")
+                #     top = pd.DataFrame({
+                #         'VENDOR_NAME': ['Globalogistics Corp','Mainframe Solutions','Apex Supplies','Inorbit','Cosewise','iCraft'],
+                #         'SPEND': [1200000,880000,600000,580000,550000,520000]
+                #     })
+                    st.info("No vendor spend data for selected range.")
                 data = top.rename(columns={'VENDOR_NAME':'Vendor','SPEND':'Spend'})
                 alt_bar(data, x='Vendor', y='Spend', title=None, horizontal=True, color='#22C55E', height=280)
             except Exception as e:
