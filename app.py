@@ -79,7 +79,7 @@ def cache_set(question: str, sql: str, result_df) -> None:
     except Exception as _ce:
         logger.warning(f"cache_set wrapper failed: {_ce}")
 from warehouse_setup import ensure_warehouse_tables
-session = get_active_session()
+# session = get_active_session()
 
 def _initialize_genie_session():
     """Initialize Genie session state for memory management."""
@@ -105,23 +105,23 @@ def save_query_to_session_memory(question: str, sql: str, result_summary: str):
     logger.info(f"Query saved to session memory: {question[:50]}")
 
 
-def archive_session_to_longterm_memory(session_summary: str = ""):
-    """Move current session to long-term memory."""
-    if not st.session_state.genie_queries:
-        return
-    session_obj = {
-        "session_id": st.session_state.genie_session_id,
-        "query_count": len(st.session_state.genie_queries),
-        "queries": [q["question"] for q in st.session_state.genie_queries],
-        "timestamp": datetime.now().isoformat(),
-        "summary": session_summary,
-        "key_topics": _extract_key_topics(st.session_state.genie_queries)
-    }
-    st.session_state.genie_previous_sessions.append(session_obj)
-    print(f"Initialized new Genie session: {st.session_state}")
-    if len(st.session_state.genie_previous_sessions) > 2:
-        st.session_state.genie_previous_sessions = st.session_state.genie_previous_sessions[-2:]
-    logger.info(f"Session {st.session_state.genie_session_id} archived to long-term memory")
+# def archive_session_to_longterm_memory(session_summary: str = ""):
+#     """Move current session to long-term memory."""
+#     if not st.session_state.genie_queries:
+#         return
+#     session_obj = {
+#         "session_id": st.session_state.genie_session_id,
+#         "query_count": len(st.session_state.genie_queries),
+#         "queries": [q["question"] for q in st.session_state.genie_queries],
+#         "timestamp": datetime.now().isoformat(),
+#         "summary": session_summary,
+#         "key_topics": _extract_key_topics(st.session_state.genie_queries)
+#     }
+#     st.session_state.genie_previous_sessions.append(session_obj)
+#     print(f"Initialized new Genie session: {st.session_state}")
+#     if len(st.session_state.genie_previous_sessions) > 2:
+#         st.session_state.genie_previous_sessions = st.session_state.genie_previous_sessions[-2:]
+#     logger.info(f"Session {st.session_state.genie_session_id} archived to long-term memory")
 
 
 def get_session_context_for_prompt() -> str:
@@ -3896,14 +3896,12 @@ SELECT
         out["sql"]["invoice_aging"] = aging_sql
         aging = run_df(aging_sql)
         
-        if not aging.empty:
-            aging = aging.rename(columns={"bucket": "VENDOR_NAME"})
-        
+        # Note: query returns AGING_BUCKET, INVOICE_COUNT, TOTAL_AMOUNT
         out["vendors_df"] = aging
         out["extra_dfs"]["invoice_aging"] = aging
         
-        total_inv = int(aging["CNT"].sum()) if not aging.empty and "CNT" in aging.columns else 0
-        total_amt = safe_number(aging["SPEND"].sum(), 0) if not aging.empty and "SPEND" in aging.columns else 0
+        total_inv = int(aging["INVOICE_COUNT"].sum()) if not aging.empty and "INVOICE_COUNT" in aging.columns else 0
+        total_amt = safe_number(aging["TOTAL_AMOUNT"].sum(), 0) if not aging.empty and "TOTAL_AMOUNT" in aging.columns else 0
         
         out["metrics"] = {
             "summary": "No overdue invoices in aging buckets." if total_inv == 0 else f"{total_inv} invoices in aging buckets, {abbr_currency(total_amt)} total.",
@@ -4022,12 +4020,15 @@ if st.session_state.page == 'dashboard':
     with col_vendor:
         try:
             vendor_df = run_df(f"""
-                SELECT DISTINCT V.VENDOR_NAME
+                SELECT DISTINCT
+                    V.VENDOR_NAME
                 FROM {DB}.{SCHEMA}.fact_all_sources_vw F
-                LEFT JOIN {DB}.{SCHEMA}.dim_vendor_vw V ON F.VENDOR_ID = V.VENDOR_ID
-                WHERE F.POSTING_DATE BETWEEN {start_lit_tmp} AND {end_lit_tmp}
-                  AND V.VENDOR_NAME IS NOT NULL
-                ORDER BY 1
+                LEFT JOIN {DB}.{SCHEMA}.dim_vendor_vw V
+                    ON F.VENDOR_ID = V.VENDOR_ID
+                WHERE F.POSTING_DATE >= CAST({start_lit_tmp} AS DATE)
+                AND F.POSTING_DATE <= CAST({end_lit_tmp} AS DATE)
+                AND V.VENDOR_NAME IS NOT NULL
+                ORDER BY V.VENDOR_NAME;
             """)
             vendor_list = ["All Vendors"]
             if not vendor_df.empty and "VENDOR_NAME" in vendor_df.columns:
@@ -5141,32 +5142,23 @@ if st.session_state.get('page') == 'genie':
         st.session_state.selected_analysis = clicked_key
         st.session_state.show_analysis = True
         with st.spinner(f"Running {a['title']} analysis..."):
-            # Route Invoice Aging through Cortex Analyst for Descriptive+Prescriptive layout and chart
-            if clicked_key == "invoice_aging":
-                cortex_result = process_genie_query(a["question"], analysis_type=clicked_key)
-                st.session_state.analyst_response = cortex_result
+            # All quick analyses use run_quick_analysis with verified CTE-based SQL
+            # (avoids LLM generating broken SQL with alias in ORDER BY)
+            try:
+                quick_result = run_quick_analysis(clicked_key)
+                st.session_state.analyst_response = quick_result
                 st.session_state.recent_analyses.insert(0, {
                     "query": a["question"],
                     "type": clicked_key,
                     "timestamp": pd.Timestamp.now(),
-                    "response": cortex_result,
+                    "response": quick_result,
                 })
-            else:
-                try:
-                    quick_result = run_quick_analysis(clicked_key)
-                    st.session_state.analyst_response = quick_result
-                    st.session_state.recent_analyses.insert(0, {
-                        "query": a["question"],
-                        "type": clicked_key,
-                        "timestamp": pd.Timestamp.now(),
-                        "response": quick_result,
-                    })
-                    st.session_state.recent_analyses = st.session_state.recent_analyses[:10]
-                    _append_genie_question(a["question"], clicked_key)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Analysis failed: {str(e)[:200]}")
-                    st.session_state.analyst_response = None
+                st.session_state.recent_analyses = st.session_state.recent_analyses[:10]
+                _append_genie_question(a["question"], clicked_key)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Analysis failed: {str(e)[:200]}")
+                st.session_state.analyst_response = None
 
     st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
     
@@ -5683,9 +5675,40 @@ if st.session_state.get('page') == 'genie':
                             
                                
 
-                    # Prescriptive recommendations (collapsible)
+                    # Prescriptive recommendations — chart above expander, text inside
                     quick_dfs = [response.get("monthly_df"), response.get("vendors_df")] + list((response.get("extra_dfs") or {}).values())
                     quick_pres = _generate_prescriptive_from_dfs([d for d in quick_dfs if d is not None])
+
+                    # ── One prescriptive chart rendered ABOVE the expander bar ──────────
+                    for _pdf in [d for d in quick_dfs if d is not None]:
+                        if _pdf.empty:
+                            continue
+                        _up = {str(c).upper(): c for c in _pdf.columns}
+                        if "AGING_BUCKET" in _up:
+                            _bcol = _up["AGING_BUCKET"]
+                            _ccol = _up.get("INVOICE_COUNT") or _up.get("CNT")
+                            _acol = _up.get("TOTAL_AMOUNT") or _up.get("TOTAL_OVERDUE_AMOUNT") or _up.get("SPEND")
+                            _chart_col = _ccol or _acol
+                            if _chart_col:
+                                _plot_df = _pdf[[_bcol, _chart_col]].copy()
+                                _plot_df[_chart_col] = pd.to_numeric(_plot_df[_chart_col], errors="coerce").fillna(0)
+                                _title = "Invoice Count by Aging Bucket" if _chart_col == _ccol else "Total Overdue Amount by Aging Bucket"
+                                alt_bar(_plot_df, x=_bcol, y=_chart_col, color="#5046e5", height=280, horizontal=True, title=_title)
+                            break
+                        elif ("VENDOR_NAME" in _up or "VENDOR_ID" in _up):
+                            _vcol = _up.get("VENDOR_NAME") or _up.get("VENDOR_ID")
+                            _scol = _up.get("TOTAL_SPEND") or _up.get("SPEND") or _up.get("AMOUNT")
+                            if _vcol and _scol:
+                                _top_v = _pdf.nlargest(8, _scol) if pd.api.types.is_numeric_dtype(_pdf[_scol]) else _pdf.head(8)
+                                alt_bar(_top_v, x=_vcol, y=_scol, color="#5046e5", height=280, horizontal=True, title="Top Vendors — Spend Optimization Targets")
+                            break
+                        elif "AVG_DAYS_TO_PAY" in _up:
+                            _mcol = next((v for k, v in _up.items() if k in ("MONTH", "PERIOD")), None)
+                            _dcol = _up["AVG_DAYS_TO_PAY"]
+                            if _mcol:
+                                alt_bar(_pdf, x=_mcol, y=_dcol, color="#f97316", height=260, title="Avg Days to Pay")
+                            break
+
                     if quick_pres:
                         with st.expander("Prescriptive — Recommendations & next steps", expanded=False):
                             pres_normalized = re.sub(r'<strong>(.*?)</strong>', r'**\1**', quick_pres)
