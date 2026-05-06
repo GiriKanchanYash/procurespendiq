@@ -3303,6 +3303,39 @@ def render_invoice_page():
             st.markdown(_build_html_table(common_df), unsafe_allow_html=True)
 
             st.markdown("### **Status History**")
+
+            # If this invoice was just paid, inject the PAID row immediately
+            # (DB replication may lag; this ensures the row appears right away)
+            _just_paid_inv = st.session_state.get("_inv_just_paid_invoice", "")
+            _just_paid_at  = st.session_state.get("_inv_just_paid_at", "")
+            _current_inv   = ""
+            if common_df is not None and not common_df.empty:
+                _inv_col_name = "INVOICE NUMBER" if "INVOICE NUMBER" in common_df.columns else common_df.columns[0]
+                _current_inv = str(common_df[_inv_col_name].iloc[0]).strip()
+
+            _show_paid_banner = False
+            if _just_paid_inv and _current_inv and _just_paid_inv == _current_inv:
+                _show_paid_banner = True
+                # Inject PAID row if not already present in status_df
+                if status_df is None or status_df.empty:
+                    status_df = pd.DataFrame(columns=["INVOICE NUMBER", "STATUS", "EFFECTIVE DATE", "STATUS NOTES"])
+                _paid_already = (status_df.get("STATUS", pd.Series(dtype=str)).str.upper() == "PAID").any() if "STATUS" in status_df.columns else False
+                if not _paid_already:
+                    _new_paid_row = {col: "" for col in status_df.columns}
+                    if "INVOICE NUMBER" in status_df.columns:
+                        _new_paid_row["INVOICE NUMBER"] = _current_inv
+                    if "STATUS" in status_df.columns:
+                        _new_paid_row["STATUS"] = "PAID"
+                    if "EFFECTIVE DATE" in status_df.columns:
+                        _new_paid_row["EFFECTIVE DATE"] = _just_paid_at
+                    if "STATUS NOTES" in status_df.columns:
+                        _new_paid_row["STATUS NOTES"] = "Processed via ProcureSpendIQ app"
+                    status_df = pd.concat(
+                        [status_df, pd.DataFrame([_new_paid_row])],
+                        ignore_index=True
+                    )
+
+
             if status_df is not None and not status_df.empty:
                 status_df = status_df.replace(r"^\s*$", np.nan, regex=True).dropna(how="all")
                 # CSS for Status History: wrap only STATUS NOTES (4th column), keep others on one line
@@ -3415,8 +3448,27 @@ def render_invoice_page():
             # Fixed Proceed to Pay button at bottom-right of page (after all content)
             pay_status = st.session_state.get("_inv_pay_status", "")
             if pay_status == "processed":
-                st.success("Invoice has been processed and marked as Paid.")
+                # Banner is now shown inline below the tabs; just clear the flag
                 st.session_state.pop("_inv_pay_status", None)
+            # Show inline success banner below vendor/company tabs if invoice was just paid
+            if _show_paid_banner:
+                st.markdown(
+                    """
+                    <div style="
+                        background: #f0fdf4;
+                        border: 1px solid #86efac;
+                        border-radius: 6px;
+                        color: #166534;
+                        font-size: 14px;
+                        font-weight: 500;
+                        padding: 12px 20px;
+                        margin-top: 16px;
+                    ">
+                        Invoice has been processed and marked as Paid.
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
             elif pay_status == "paid":
                 st.info("This invoice is already Paid.")
                 st.session_state.pop("_inv_pay_status", None)
@@ -3507,11 +3559,13 @@ def render_invoice_page():
 
                                 st.session_state["inv_processed_set"] = st.session_state.get("inv_processed_set", set()) | {selected_inv}
                                 st.session_state.get("inv_ai_suggestion_cache", {}).pop(selected_inv, None)
+                                # Store just-paid info so status history can show the new PAID row immediately
+                                st.session_state["_inv_just_paid_invoice"] = selected_inv
+                                st.session_state["_inv_just_paid_at"] = datetime.now().strftime("%Y-%m-%d")
                                 st.session_state.pop("_inv_pay_status", None)
                                 st.session_state.pop("_inv_pay_invoice", None)
                                 st.session_state.pop("_inv_pay_comp_code", None)
                                 st.session_state.pop("_inv_pay_fisc_year", None)
-                                st.success("Invoice processed successfully. Status updated to Paid in all tables.")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Error processing invoice: {e}")
