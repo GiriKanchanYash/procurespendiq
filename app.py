@@ -79,7 +79,7 @@ def cache_set(question: str, sql: str, result_df) -> None:
     except Exception as _ce:
         logger.warning(f"cache_set wrapper failed: {_ce}")
 from warehouse_setup import ensure_warehouse_tables
-session = get_active_session()
+# session = get_active_session()
 
 def _initialize_genie_session():
     """Initialize Genie session state for memory management."""
@@ -105,23 +105,23 @@ def save_query_to_session_memory(question: str, sql: str, result_summary: str):
     logger.info(f"Query saved to session memory: {question[:50]}")
 
 
-def archive_session_to_longterm_memory(session_summary: str = ""):
-    """Move current session to long-term memory."""
-    if not st.session_state.genie_queries:
-        return
-    session_obj = {
-        "session_id": st.session_state.genie_session_id,
-        "query_count": len(st.session_state.genie_queries),
-        "queries": [q["question"] for q in st.session_state.genie_queries],
-        "timestamp": datetime.now().isoformat(),
-        "summary": session_summary,
-        "key_topics": _extract_key_topics(st.session_state.genie_queries)
-    }
-    st.session_state.genie_previous_sessions.append(session_obj)
-    print(f"Initialized new Genie session: {st.session_state}")
-    if len(st.session_state.genie_previous_sessions) > 2:
-        st.session_state.genie_previous_sessions = st.session_state.genie_previous_sessions[-2:]
-    logger.info(f"Session {st.session_state.genie_session_id} archived to long-term memory")
+# def archive_session_to_longterm_memory(session_summary: str = ""):
+#     """Move current session to long-term memory."""
+#     if not st.session_state.genie_queries:
+#         return
+#     session_obj = {
+#         "session_id": st.session_state.genie_session_id,
+#         "query_count": len(st.session_state.genie_queries),
+#         "queries": [q["question"] for q in st.session_state.genie_queries],
+#         "timestamp": datetime.now().isoformat(),
+#         "summary": session_summary,
+#         "key_topics": _extract_key_topics(st.session_state.genie_queries)
+#     }
+#     st.session_state.genie_previous_sessions.append(session_obj)
+#     print(f"Initialized new Genie session: {st.session_state}")
+#     if len(st.session_state.genie_previous_sessions) > 2:
+#         st.session_state.genie_previous_sessions = st.session_state.genie_previous_sessions[-2:]
+#     logger.info(f"Session {st.session_state.genie_session_id} archived to long-term memory")
 
 
 def get_session_context_for_prompt() -> str:
@@ -4022,12 +4022,15 @@ if st.session_state.page == 'dashboard':
     with col_vendor:
         try:
             vendor_df = run_df(f"""
-                SELECT DISTINCT V.VENDOR_NAME
+                SELECT DISTINCT
+                               V.VENDOR_NAME
                 FROM {DB}.{SCHEMA}.fact_all_sources_vw F
-                LEFT JOIN {DB}.{SCHEMA}.dim_vendor_vw V ON F.VENDOR_ID = V.VENDOR_ID
-                WHERE F.POSTING_DATE BETWEEN {start_lit_tmp} AND {end_lit_tmp}
-                  AND V.VENDOR_NAME IS NOT NULL
-                ORDER BY 1
+                LEFT JOIN {DB}.{SCHEMA}.dim_vendor_vw V
+                    ON F.VENDOR_ID = V.VENDOR_ID
+                WHERE F.POSTING_DATE >= CAST({start_lit_tmp} AS DATE)
+                AND F.POSTING_DATE <= CAST({end_lit_tmp} AS DATE)
+                AND V.VENDOR_NAME IS NOT NULL
+                ORDER BY V.VENDOR_NAME;
             """)
             vendor_list = ["All Vendors"]
             if not vendor_df.empty and "VENDOR_NAME" in vendor_df.columns:
