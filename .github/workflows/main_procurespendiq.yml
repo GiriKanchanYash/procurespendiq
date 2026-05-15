@@ -63,4 +63,4 @@ jobs:
         with:
           app-name: 'procurespendiq'
           slot-name: 'Production'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_6551973E16494EB38773250F9F72FF36 }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_0FD709239F534957B562131C9739FA20 }}
