@@ -9,6 +9,13 @@ Enhancements over the original:
   - Data-Vault-aware helpers (req 5).
   - No emojis in log messages (req 1).
   - Warehouse read/write separated from Lakehouse reads (req 11).
+
+Fixes applied:
+  - Per-query connections (no shared connection state) — fixes "Connection is busy"
+  - Retry logic with exponential backoff — fixes transient Azure failures
+  - Cursor-based fetch instead of pd.read_sql — fixes pandas DBAPI2 warnings
+  - Proper finally blocks — connections always closed after use
+  - No module-level connection singletons — safe for Streamlit reruns
 """
 
 from __future__ import annotations
@@ -29,10 +36,92 @@ def _safe_log_event(event_type: str, payload: dict) -> None:
     """Avoid circular imports by importing Genie logging lazily."""
     try:
         from genie_middleware import log_event
-
         log_event(event_type, payload)
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Core connection helper — used by everything below
+# ---------------------------------------------------------------------------
+
+def _make_connection(connection_string: str, retries: int = 3) -> pyodbc.Connection:
+    """
+    Create a fresh pyodbc connection with retry + exponential backoff.
+    Each caller gets its OWN connection — no sharing between queries.
+    Raises RuntimeError after all retries are exhausted.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            conn = pyodbc.connect(connection_string, timeout=30)
+            conn.execute("SELECT 1")   # verify it is actually alive
+            return conn
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "DB connection attempt %d/%d failed: %s", attempt + 1, retries, exc
+            )
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)   # 1 s, 2 s backoff
+    raise RuntimeError(
+        f"Could not connect to Fabric after {retries} attempts: {last_exc}"
+    )
+
+
+def _fetch_df(connection_string: str, sql: str, params: Optional[list] = None) -> pd.DataFrame:
+    """
+    Execute a SELECT and return a DataFrame.
+    Opens a fresh connection, fetches all rows, closes immediately.
+    Never uses pd.read_sql — avoids the pandas DBAPI2 warning.
+    """
+    conn = None
+    try:
+        conn = _make_connection(connection_string)
+        cursor = conn.cursor()
+        if params:
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(sql)
+        columns = [col[0] for col in cursor.description]
+        rows = cursor.fetchall()
+        cursor.close()
+        return pd.DataFrame.from_records(rows, columns=columns)
+    except Exception as exc:
+        raise RuntimeError(f"Query failed: {exc}\nSQL: {sql}") from exc
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _execute_non_query(connection_string: str, sql: str, params: Optional[list] = None) -> int:
+    """
+    Execute a non-SELECT statement (INSERT / UPDATE / DELETE / DDL).
+    Opens a fresh connection, commits, closes immediately.
+    """
+    conn = None
+    try:
+        conn = _make_connection(connection_string)
+        cursor = conn.cursor()
+        if params:
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(sql)
+        conn.commit()
+        rows = cursor.rowcount
+        cursor.close()
+        return rows
+    except Exception as exc:
+        raise RuntimeError(f"Non-query failed: {exc}\nSQL: {sql}") from exc
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -44,41 +133,25 @@ class FabricSession:
     Wraps a pyodbc connection to the Microsoft Fabric Lakehouse SQL endpoint.
     Provides a Snowpark-compatible .sql().collect() / .to_pandas() interface
     so upper-layer code requires minimal changes.
+
+    IMPORTANT: No connection is stored on this object.
+    Every method call opens its own fresh connection and closes it when done.
+    This is intentional — pyodbc connections are NOT safe to share across
+    concurrent Streamlit reruns.
     """
 
     def __init__(self, connection_string: str | None = None):
         self._connection_string = connection_string or Config.get_connection_string()
-        self._connection: pyodbc.Connection | None = None
-
-    # ------------------------------------------------------------------
-    def _connect(self) -> pyodbc.Connection:
-        return pyodbc.connect(self._connection_string)
 
     def get_connection(self) -> pyodbc.Connection:
-        if self._connection is None or not self._is_alive():
-            self._connection = self._connect()
-        return self._connection
+        """Return a brand-new, verified connection. Caller must close it."""
+        return _make_connection(self._connection_string)
 
-    def _is_alive(self) -> bool:
-        try:
-            if self._connection:
-                self._connection.execute("SELECT 1")
-                return True
-        except Exception:
-            self._connection = None
-        return False
-
-    # ------------------------------------------------------------------
     def sql(self, query: str) -> "FabricDataFrame":
         return FabricDataFrame(query, self)
 
     def close(self) -> None:
-        if self._connection:
-            try:
-                self._connection.close()
-            except Exception:
-                pass
-            self._connection = None
+        pass   # nothing stored — nothing to close
 
 
 class FabricDataFrame:
@@ -89,41 +162,40 @@ class FabricDataFrame:
         self._session = session
 
     def collect(self) -> list:
-        conn = self._session.get_connection()
-        cursor = conn.cursor()
+        conn = None
         try:
+            conn = self._session.get_connection()
+            cursor = conn.cursor()
             cursor.execute(self._query)
-            return cursor.fetchall()
-        finally:
+            rows = cursor.fetchall()
             cursor.close()
+            return rows
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def to_pandas(self) -> pd.DataFrame:
-        conn = self._session.get_connection()
-        return pd.read_sql(self._query, conn)
+        """Use cursor-based fetch — avoids pd.read_sql DBAPI2 warning."""
+        return _fetch_df(self._session._connection_string, self._query)
 
 
 # ---------------------------------------------------------------------------
-# Module-level session singletons
+# Module-level session factories
+# NOTE: No singletons — each call returns a lightweight FabricSession that
+# holds no connection. Connections are opened per-query and closed immediately.
 # ---------------------------------------------------------------------------
-
-_lakehouse_session: FabricSession | None = None
-_warehouse_session: FabricSession | None = None
-
 
 def get_active_session() -> FabricSession:
-    """Return the module-level Lakehouse session (read-only analytics)."""
-    global _lakehouse_session
-    if _lakehouse_session is None:
-        _lakehouse_session = FabricSession()
-    return _lakehouse_session
+    """Return a Lakehouse session (read-only analytics)."""
+    return FabricSession(Config.get_connection_string())
 
 
 def _get_warehouse_session() -> FabricSession:
-    """Return the module-level Warehouse session (read + write)."""
-    global _warehouse_session
-    if _warehouse_session is None:
-        _warehouse_session = FabricSession(Config.get_warehouse_connection_string())
-    return _warehouse_session
+    """Return a Warehouse session (read + write)."""
+    return FabricSession(Config.get_warehouse_connection_string())
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +205,7 @@ def _get_warehouse_session() -> FabricSession:
 def run_df(sql: str) -> pd.DataFrame:
     """Execute SQL against the Lakehouse and return a DataFrame."""
     try:
-        return get_active_session().sql(sql).to_pandas()
+        return _fetch_df(Config.get_connection_string(), sql)
     except Exception as exc:
         raise RuntimeError(f"Lakehouse query failed: {exc}") from exc
 
@@ -141,8 +213,7 @@ def run_df(sql: str) -> pd.DataFrame:
 def execute_query(sql: str, params: Optional[list] = None) -> pd.DataFrame:
     """Parameterised Lakehouse SELECT."""
     try:
-        conn = get_active_session().get_connection()
-        return pd.read_sql(sql, conn, params=params or [])
+        return _fetch_df(Config.get_connection_string(), sql, params)
     except Exception as exc:
         raise RuntimeError(f"Lakehouse query failed: {exc}") from exc
 
@@ -150,13 +221,7 @@ def execute_query(sql: str, params: Optional[list] = None) -> pd.DataFrame:
 def execute_non_query(sql: str, params: Optional[list] = None) -> int:
     """Non-SELECT statement against the Lakehouse (DDL etc.)."""
     try:
-        conn = get_active_session().get_connection()
-        cursor = conn.cursor()
-        cursor.execute(sql, params or [])
-        conn.commit()
-        rows = cursor.rowcount
-        cursor.close()
-        return rows
+        return _execute_non_query(Config.get_connection_string(), sql, params)
     except Exception as exc:
         raise RuntimeError(f"Lakehouse non-query failed: {exc}") from exc
 
@@ -166,14 +231,14 @@ def execute_non_query(sql: str, params: Optional[list] = None) -> int:
 # ---------------------------------------------------------------------------
 
 def get_warehouse_connection() -> pyodbc.Connection:
-    return _get_warehouse_session().get_connection()
+    """Return a fresh Warehouse connection. Caller is responsible for closing it."""
+    return _make_connection(Config.get_warehouse_connection_string())
 
 
 def run_warehouse_df(sql: str) -> pd.DataFrame:
     """SELECT from the Warehouse."""
     try:
-        conn = _get_warehouse_session().get_connection()
-        return pd.read_sql(sql, conn)
+        return _fetch_df(Config.get_warehouse_connection_string(), sql)
     except Exception as exc:
         raise RuntimeError(f"Warehouse read failed: {exc}") from exc
 
@@ -181,16 +246,7 @@ def run_warehouse_df(sql: str) -> pd.DataFrame:
 def run_warehouse_non_query(sql: str, params: Optional[list] = None) -> int:
     """INSERT / UPDATE / DELETE against the Warehouse."""
     try:
-        conn = _get_warehouse_session().get_connection()
-        cursor = conn.cursor()
-        if params:
-            cursor.execute(sql, params)
-        else:
-            cursor.execute(sql)
-        conn.commit()
-        rows = cursor.rowcount
-        cursor.close()
-        return rows
+        return _execute_non_query(Config.get_warehouse_connection_string(), sql, params)
     except Exception as exc:
         raise RuntimeError(f"Warehouse write failed: {exc}") from exc
 
@@ -230,7 +286,6 @@ def cache_get(question: str) -> Optional[dict]:
         """)
 
         if df.empty:
-            # 🔹 Log cache miss
             _safe_log_event("CACHE_MISS", {
                 "summary": "Cache miss",
                 "cache_key": key,
@@ -265,7 +320,6 @@ def cache_get(question: str) -> Optional[dict]:
 
         duration = round(time.time() - start_time, 3)
 
-        # 🔹 Log cache hit
         _safe_log_event("CACHE_HIT", {
             "summary": f"{result['row_count']} rows (cache) in {duration}s",
             "sql": result["sql"],
@@ -279,7 +333,6 @@ def cache_get(question: str) -> Optional[dict]:
     except Exception as exc:
         duration = round(time.time() - start_time, 3)
 
-        # 🔹 Log cache error
         _safe_log_event("CACHE_ERROR", {
             "summary": "Cache lookup failed",
             "details": f"{str(exc)} | Time: {duration}s",
@@ -316,7 +369,6 @@ def cache_set(question: str, sql: str, result_df: pd.DataFrame) -> None:
 
     nrows = len(result_df)
     try:
-        # Try UPDATE first
         rows_updated = run_warehouse_non_query(f"""
             UPDATE {_CACHE_TABLE}
             SET    GENERATED_SQL = '{sql_esc}',
@@ -329,7 +381,6 @@ def cache_set(question: str, sql: str, result_df: pd.DataFrame) -> None:
             WHERE  CACHE_KEY = '{key}'
         """)
         if rows_updated == 0:
-            # No existing row - INSERT with all values explicit (no DEFAULT)
             run_warehouse_non_query(f"""
                 INSERT INTO {_CACHE_TABLE}
                     (CACHE_KEY, QUESTION_HASH, QUESTION_TEXT, GENERATED_SQL,
