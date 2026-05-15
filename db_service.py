@@ -463,3 +463,4 @@ if __name__ == "__main__":
         print(f"Sample query returned {len(df)} rows.")
     else:
         print("Connection failed. Check configuration.")
+--end
