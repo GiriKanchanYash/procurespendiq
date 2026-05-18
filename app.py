@@ -3304,8 +3304,24 @@ def render_invoice_page():
             st.markdown(_build_html_table(common_df), unsafe_allow_html=True)
 
             st.markdown("### **Status History**")
-            if status_df is not None and not status_df.empty:
-                status_df = status_df.replace(r"^\s*$", np.nan, regex=True).dropna(how="all")
+            # Use updated status_df from session state ONLY if it's for the current invoice
+            current_inv = None
+            if "INVOICE NUMBER" in common_df.columns:
+                current_inv = str(common_df["INVOICE NUMBER"].iloc[0]).strip() if not common_df.empty else None
+            
+            cached_inv = st.session_state.get("_updated_status_inv")
+            if cached_inv and current_inv and cached_inv == current_inv:
+                # Use cached version with the new payment row
+                display_status_df = st.session_state.get("_updated_status_df", status_df)
+            else:
+                # Use fresh data from database
+                display_status_df = status_df
+                # Clear the cache for other invoices
+                st.session_state.pop("_updated_status_df", None)
+                st.session_state.pop("_updated_status_inv", None)
+            
+            if display_status_df is not None and not display_status_df.empty:
+                display_status_df = display_status_df.replace(r"^\s*$", np.nan, regex=True).dropna(how="all")
                 # CSS for Status History: wrap only STATUS NOTES (4th column), keep others on one line
                 st.markdown(
                     """
@@ -3331,7 +3347,7 @@ def render_invoice_page():
                     unsafe_allow_html=True,
                 )
                 st.markdown(
-                    f'<div class="status-history-wrapper">{_build_html_table(status_df)}</div>',
+                    f'<div class="status-history-wrapper">{_build_html_table(display_status_df)}</div>',
                     unsafe_allow_html=True,
                 )
             else:
@@ -3508,6 +3524,20 @@ def render_invoice_page():
 
                                 st.session_state["inv_processed_set"] = st.session_state.get("inv_processed_set", set()) | {selected_inv}
                                 st.session_state.get("inv_ai_suggestion_cache", {}).pop(selected_inv, None)
+                                
+                                # Add new status history entry to UI (without backend changes)
+                                if status_df is not None and not status_df.empty:
+                                    new_status_row = pd.DataFrame({
+                                        'INVOICE NUMBER': [selected_inv],
+                                        'STATUS': ['PAID'],
+                                        'EFFECTIVE DATE': [datetime.now().strftime('%Y-%m-%d')],
+                                        'STATUS NOTES': ['Processed via ProcureSpendIQ app']
+                                    })
+                                    status_df = pd.concat([status_df, new_status_row], ignore_index=True)
+                                    # Store updated status_df in session state for display (only for this specific invoice)
+                                    st.session_state["_updated_status_df"] = status_df
+                                    st.session_state["_updated_status_inv"] = selected_inv
+                                
                                 st.session_state.pop("_inv_pay_status", None)
                                 st.session_state.pop("_inv_pay_invoice", None)
                                 st.session_state.pop("_inv_pay_comp_code", None)
