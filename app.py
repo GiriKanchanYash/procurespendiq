@@ -4025,11 +4025,25 @@ if st.session_state.page == 'dashboard':
                 "date_range",
                 (date.today().replace(day=1), date.today())
             )
+        
+        def on_date_change():
+            """Callback when date range changes to trigger immediate update"""
+            new_range = st.session_state.dashboard_date_input
+            if isinstance(new_range, (list, tuple)) and len(new_range) == 2:
+                st.session_state.date_range = new_range
+                # Mark as custom preset if it differs from current preset
+                if st.session_state.preset != "Custom":
+                    rng_start_preset, rng_end_preset = compute_range_preset(st.session_state.preset)
+                    if new_range[0] != rng_start_preset or new_range[1] != rng_end_preset:
+                        st.session_state.preset = "Custom"
+        
         date_range = st.date_input(
             "Date Range",
             value=default_range,
             format="YYYY-MM-DD",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
+            key="dashboard_date_input",
+            on_change=on_date_change
         )
 
         if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
@@ -4722,9 +4736,8 @@ if st.session_state.get('page','dashboard') == 'dashboard':
             THEN COALESCE(INVOICE_AMOUNT_LOCAL,0)
             ELSE 0
         END) AS ACTUAL
-FROM fact_all_sources_vw FACT
-WHERE POSTING_DATE BETWEEN DATEADD(year, -2, '2026-01-17') 
-                        AND '2026-02-16'
+FROM {DB}.{SCHEMA}.fact_all_sources_vw FACT
+WHERE POSTING_DATE BETWEEN {sql_date(rng_start - timedelta(days=730))} AND {sql_date(rng_end)}
 GROUP BY 
     FORMAT(POSTING_DATE, 'yyyy-MM'),
     MONTH(POSTING_DATE),
@@ -4733,25 +4746,33 @@ ORDER BY MONTH_START;
 
                 """
                 spend = run_df(trend_sql)
-                if spend.empty:
-                    st.info("No spend data for selected range.")
+                if spend is None or spend.empty:
+                    st.info("No spend in selected range.")
                     st.markdown("<div style='height:200px;'></div>", unsafe_allow_html=True)
                 else:
                     spend = spend.sort_values("MONTH_START")
                     #Forecast = average of same month across prior 2 years
                     max_year = int(spend["YEAR_NUM"].max())
                     hist = spend[spend["YEAR_NUM"] < max_year]
-                    forecast_map = hist.groupby("MONTH_NUM")["ACTUAL"].mean()
-                    spend["FORECAST"] = spend["MONTH_NUM"].map(forecast_map)
+                    if not hist.empty:
+                        forecast_map = hist.groupby("MONTH_NUM")["ACTUAL"].mean()
+                        spend["FORECAST"] = spend["MONTH_NUM"].map(forecast_map)
+                    else:
+                        spend["FORECAST"] = spend["ACTUAL"]
 
                     # Display only selected months in the selected range
                     start_month = rng_start.replace(day=1)
                     end_month = rng_end.replace(day=1)
                     spend = spend[spend["MONTH_START"].between(start_month, end_month)]
-                    alt_bar_actual_vs_forecast(
-                        spend, month_col="MONTH", actual_col="ACTUAL", forecast_col="FORECAST",
-                        height=280, title=None, show_legend=True
-                    )
+                    
+                    if spend.empty:
+                        st.info("No spend in selected range.")
+                        st.markdown("<div style='height:200px;'></div>", unsafe_allow_html=True)
+                    else:
+                        alt_bar_actual_vs_forecast(
+                            spend, month_col="MONTH", actual_col="ACTUAL", forecast_col="FORECAST",
+                            height=280, title=None, show_legend=True
+                        )
             except Exception as e:
                 st.error(f"Failed to load spend trend: {e}")
                 st.markdown("<div style='height:200px;'></div>", unsafe_allow_html=True)
