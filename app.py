@@ -4691,10 +4691,10 @@ if st.session_state.get('page','dashboard') == 'dashboard':
                     alt_donut_status(inv, label_col="STATUS", value_col="CNT", height=280, title=None, show_legend=True)
                 else:
                     st.info("No invoices in selected range.")
-                    st.markdown("<div style='height:200px;'></div>", unsafe_allow_html=True)
+                    st.markdown("<div style='height:60px;'></div>", unsafe_allow_html=True)
             except Exception as e:
                 st.error(f"Failed to load invoice status: {e}")
-                st.markdown("<div style='height:200px;'></div>", unsafe_allow_html=True)
+                st.markdown("<div style='height:60px;'></div>", unsafe_allow_html=True)
 
     # Top 10 Vendors by Spend
     with c4:
@@ -4710,15 +4710,14 @@ if st.session_state.get('page','dashboard') == 'dashboard':
                 """
                 top = run_df(top_sql)
                 if top is None or top.empty:
-                #     top = pd.DataFrame({
-                #         'VENDOR_NAME': ['Globalogistics Corp','Mainframe Solutions','Apex Supplies','Inorbit','Cosewise','iCraft'],
-                #         'SPEND': [1200000,880000,600000,580000,550000,520000]
-                #     })
                     st.info("No vendor spend data for selected range.")
-                data = top.rename(columns={'VENDOR_NAME':'Vendor','SPEND':'Spend'})
-                alt_bar(data, x='Vendor', y='Spend', title=None, horizontal=True, color='#22C55E', height=280)
+                    st.markdown("<div style='height:60px;'></div>", unsafe_allow_html=True)
+                else:
+                    data = top.rename(columns={'VENDOR_NAME':'Vendor','SPEND':'Spend'})
+                    alt_bar(data, x='Vendor', y='Spend', title=None, horizontal=True, color='#22C55E', height=280)
             except Exception as e:
                 st.error(f"Failed to load vendor data: {e}")
+                st.markdown("<div style='height:60px;'></div>", unsafe_allow_html=True)
 
     # Spend Trend Analysis
     with c5:
@@ -4748,7 +4747,7 @@ ORDER BY MONTH_START;
                 spend = run_df(trend_sql)
                 if spend is None or spend.empty:
                     st.info("No spend in selected range.")
-                    st.markdown("<div style='height:200px;'></div>", unsafe_allow_html=True)
+                    st.markdown("<div style='height:60px;'></div>", unsafe_allow_html=True)
                 else:
                     spend = spend.sort_values("MONTH_START")
                     #Forecast = average of same month across prior 2 years
@@ -4767,7 +4766,7 @@ ORDER BY MONTH_START;
                     
                     if spend.empty:
                         st.info("No spend in selected range.")
-                        st.markdown("<div style='height:200px;'></div>", unsafe_allow_html=True)
+                        st.markdown("<div style='height:60px;'></div>", unsafe_allow_html=True)
                     else:
                         alt_bar_actual_vs_forecast(
                             spend, month_col="MONTH", actual_col="ACTUAL", forecast_col="FORECAST",
@@ -4775,7 +4774,7 @@ ORDER BY MONTH_START;
                         )
             except Exception as e:
                 st.error(f"Failed to load spend trend: {e}")
-                st.markdown("<div style='height:200px;'></div>", unsafe_allow_html=True)
+                st.markdown("<div style='height:60px;'></div>", unsafe_allow_html=True)
 # ====================== INVOICE DETAILS PAGE ======================
 elif st.session_state.page == 'cash_flow':
     render_cash_flow_page()
