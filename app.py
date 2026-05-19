@@ -187,9 +187,10 @@ st.set_page_config(
 # All DB work is deferred until after Streamlit binds its port, so Azure's 230s
 # container warmup probe succeeds before any slow DB connection can time it out.
 session = get_active_session()
-_initialize_genie_session()
+
 if "startup_db_check_done" not in st.session_state:
     st.session_state["startup_db_check_done"] = True
+    _initialize_genie_session()
     try:
         session.sql("SELECT 1 AS probe").collect()
 
