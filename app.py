@@ -36,7 +36,7 @@ if not logger.handlers:
 
 from config import Config
 from db_service import get_active_session, run_df, execute_query, execute_non_query, normalize_upper, run_warehouse_df, run_warehouse_non_query, get_warehouse_connection
-from llm_service_full import generate_sql, cortex_complete, generate_prescriptive_insights, generate_ai_invoice_suggestion
+from llm_service_full import generate_sql, cortex_complete, generate_prescriptive_insights, generate_predictive_insights, generate_ai_invoice_suggestion
 import altair as alt
 import urllib.parse
 from db_service import cache_get as _db_cache_get, cache_set as _db_cache_set
@@ -1154,6 +1154,109 @@ def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> 
         })
 
         logger.error(f"Prescriptive insights failed: {e}")
+    
+    return ""
+
+def _cortex_complete_predictive(content: list, run_df_func, question: str) -> str:
+    """Generate predictive insights (forecasts & trends) using Azure OpenAI with middleware logging."""
+    
+    start_time = time.time()
+
+    # Ensure session initialized
+    if "genie_session_initialized" not in st.session_state:
+        _initialize_genie_session()
+    
+    data_parts = []
+    executed_sqls = []
+
+    for block in content or []:
+        if block.get("type") != "sql":
+            continue
+
+        sql = block.get("statement", "")
+        if not sql.strip():
+            continue
+
+        try:
+            df = run_df_func(sql)
+            executed_sqls.append(sql)
+
+            if df is None or df.empty:
+                continue
+
+            head = df.head(40)
+            data_parts.append(head.to_string(index=False, max_colwidth=40))
+
+        except Exception as e:
+            logger.warning(f"Failed to execute SQL block: {e}")
+            continue
+    
+    if not data_parts:
+        return ""
+    
+    data_str = "\n\n---\n\n".join(data_parts)
+
+    # Limit payload size
+    if len(data_str) > 15000:
+        data_str = data_str[:15000] + "\n(truncated)"
+    
+    prompt = (
+        "You are a procurement business analyst with forecasting expertise. The user asked a question "
+        "and received the following data from our analytics. "
+        "Analyze this historical data and provide predictive insights: forecast trends, expected scenarios, risks ahead, and opportunities. "
+        "Be concrete: cite specific metrics, patterns, and extrapolations from the data. "
+        "Format as numbered list with each item on a NEW LINE (1. ...\n2. ...\n3. ...). "
+        "Bold ALL key predictions and timeframes using ** e.g. **likely to increase 15%**, **Q2 2026**. "
+        "Do NOT use HTML tags like <strong>. "
+        "Each numbered point must start on its own line.\n\n"
+        f"User question: {question}\n\n"
+        f"Historical Data:\n{data_str}"
+    )
+    
+    try:
+        result = cortex_complete(prompt, temperature=0.4, include_memory=True)
+
+        duration = round(time.time() - start_time, 3)
+
+        if result and len(result.strip()) > 20:
+            result_clean = result.strip()
+
+            # Save to session memory (existing logic)
+            save_query_to_session_memory(
+                question,
+                " | ".join(executed_sqls)[:500],
+                result_clean[:200]
+            )
+
+            # 🔥 Middleware Logging (SUCCESS)
+            log_event("AI_PREDICTIVE", {
+                "summary": result_clean[:200],
+                "full_answer": result_clean,
+                "sql": " | ".join(executed_sqls)[:1000],
+                "relevance": 0.95,
+                "details": f"LLM response time: {duration}s"
+            })
+
+            return result_clean
+
+        # 🔹 Edge case: empty/weak response
+        log_event("AI_EMPTY", {
+            "summary": "LLM returned empty/weak predictive response",
+            "details": f"Time: {duration}s",
+            "relevance": 0.2
+        })
+
+    except Exception as e:
+        duration = round(time.time() - start_time, 3)
+
+        # 🔥 Middleware Logging (ERROR)
+        log_event("AI_ERROR", {
+            "summary": "LLM predictive insights failed",
+            "details": f"{str(e)} | Time: {duration}s",
+            "relevance": 0.0
+        })
+
+        logger.error(f"Predictive insights failed: {e}")
     
     return ""
 
@@ -5900,6 +6003,7 @@ ORDER BY Sort_Order;
                             all_text = all_text.strip()
                             desc_part, pres_part = _parse_descriptive_prescriptive(all_text) if all_text else (None, None)
                             generic_pres = "See the supporting data and charts below for specific numbers to act on."
+                            cortex_pred = None  # Initialize predictive insights
                             if all_text and not pres_part:
                                 if desc_part:
                                     pres_part = generic_pres
@@ -5926,6 +6030,9 @@ ORDER BY Sort_Order;
                                 # Try CORTEX.COMPLETE first for business-driven insights
                                 cortex_pres = _cortex_complete_prescriptive(content, run_df, q_text)
                                 print(f"DEBUG cortex_pres: {cortex_pres[:100] if cortex_pres else 'EMPTY'}")  #  Keep this one too
+                                # Also generate predictive insights
+                                cortex_pred = _cortex_complete_predictive(content, run_df, q_text)
+                                print(f"DEBUG cortex_pred: {cortex_pred[:100] if cortex_pred else 'EMPTY'}")
                                 if cortex_pres:
                                     pres_part = cortex_pres
                                 else:
@@ -5952,6 +6059,12 @@ ORDER BY Sort_Order;
                                     pres_normalized = re.sub(r'<strong>(.*?)</strong>', r'**\1**', pres_part)
                                     pres_html = _markdown_bold_to_html(pres_normalized).replace("\n", "<br/>")
                                     st.markdown(f'<div class="prescriptive-content">{pres_html}</div>', unsafe_allow_html=True)
+                                # Add predictive insights if available
+                                if cortex_pred:
+                                    with st.expander("Predictive — Trends & future outlook", expanded=False):
+                                        pred_normalized = re.sub(r'<strong>(.*?)</strong>', r'**\1**', cortex_pred)
+                                        pred_html = _markdown_bold_to_html(pred_normalized).replace("\n", "<br/>")
+                                        st.markdown(f'<div class="predictive-content" style="color:#0f172a;font-size:14px;line-height:1.6;">{pred_html}</div>', unsafe_allow_html=True)
                             elif all_text:
                                 raw_esc = html.escape(all_text).replace("\n", "<br/>")
                                 st.markdown(f"""
@@ -5965,6 +6078,12 @@ ORDER BY Sort_Order;
                                   pres_normalized = re.sub(r'<strong>(.*?)</strong>', r'**\1**', pres_part)
                                   pres_html = _markdown_bold_to_html(pres_normalized).replace("\n", "<br/>")
                                   st.markdown(f'<div class="prescriptive-content">{pres_html}</div>', unsafe_allow_html=True)
+                                # Add predictive insights if available
+                                if cortex_pred:
+                                    with st.expander("Predictive — Trends & future outlook", expanded=False):
+                                        pred_normalized = re.sub(r'<strong>(.*?)</strong>', r'**\1**', cortex_pred)
+                                        pred_html = _markdown_bold_to_html(pred_normalized).replace("\n", "<br/>")
+                                        st.markdown(f'<div class="predictive-content" style="color:#0f172a;font-size:14px;line-height:1.6;">{pred_html}</div>', unsafe_allow_html=True)
                             for block_idx, block in enumerate(content):
                                 if block.get("type") == "sql":
                                     sql = block.get("statement", "")

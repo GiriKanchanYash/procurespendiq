@@ -293,6 +293,39 @@ def generate_prescriptive_insights(
 
 
 # ---------------------------------------------------------------------------
+# Predictive insights (Forecasts & trends - No emojis)
+# ---------------------------------------------------------------------------
+
+def generate_predictive_insights(
+    data_summary: str,
+    question: str,
+    temperature: float = 0.3,
+) -> str:
+    """Generate predictive insights: forecasts, trends, and future projections (no emojis)."""
+    prompt = textwrap.dedent(f"""
+        You are a procurement analytics expert with forecasting expertise.
+
+        USER QUESTION: {question}
+
+        HISTORICAL DATA SUMMARY:
+        {data_summary}
+
+        Analyze the data and provide 3-5 predictive insights about:
+        - Likely trends and trajectory
+        - Potential future scenarios
+        - Risk predictions and opportunities ahead
+        - Expected outcomes based on current patterns
+        
+        Format each prediction on a new line:
+        1. [PREDICTION CATEGORY]: [Specific forecast with timeframe]
+           Basis: [what data/trend this is based on]
+           Impact: [potential business consequence]
+    """).strip()
+
+    return cortex_complete(prompt, temperature=temperature, include_memory=True)
+
+
+# ---------------------------------------------------------------------------
 # Invoice AI suggestion (No emojis)
 # ---------------------------------------------------------------------------
 
