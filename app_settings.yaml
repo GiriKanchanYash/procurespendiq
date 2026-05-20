@@ -60,8 +60,8 @@ session:
 # UI strings - nothing hard-coded in Python (req 10)
 # ---------------------------------------------------------------------------
 ui:
-  app_title: "ProcureSpendIQ Analytics"
-  brand_name: "ProcureSpendIQ"
+  app_title: "ProcureIQ"
+  brand_name: "ProcureIQ"
   page_icon_url: "https://upload.wikimedia.org/wikipedia/commons/2/2e/Yash_Technologies_logo.png"
   default_bg_color: "#FBF9F4"
   support_email: "support@yashtechnologies.com"

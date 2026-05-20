@@ -2266,7 +2266,7 @@ def branding_bar():
             "<div style='display:flex;align-items:center;gap:12px;padding:8px 0;min-height:52px;'>"
             "<div>"
             f"<div style='font-size:30px;font-weight:900;letter-spacing:.2px;line-height:1.2;'>{Config.BRAND_NAME}</div>"
-            f"<div style='color:#64748b;font-size:12px;'>{Config.APP_TITLE}</div>"
+            f"<div style='color:#64748b;font-size:12px;'>P2P Analytics</div>"
             "</div>"
             "</div>",
             unsafe_allow_html=True,
