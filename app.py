@@ -5687,11 +5687,11 @@ if st.session_state.get('page') == 'genie':
                         """,
                         unsafe_allow_html=True,
                     )
-
+                    
             st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
 
-            # Chat area - show when not viewing loaded chat history
-            if not st.session_state.get("show_loaded_chat_history", False) and st.session_state.show_analysis and st.session_state.analyst_response:
+            # Chat area - show analysis results even when viewing chat history
+            if st.session_state.show_analysis and st.session_state.analyst_response:
                 response = st.session_state.analyst_response
                 analysis_key = st.session_state.selected_analysis
                 a = QUICK_ANALYSES.get(analysis_key, {})
