@@ -15,9 +15,9 @@ import math
 import os
 import logging
 import streamlit as st
+import time
 import pandas as pd
 import numpy as np
-from datetime import date, time, timedelta
 from datetime import date, timedelta, datetime  
 import uuid
 from typing import Optional
@@ -6020,19 +6020,10 @@ ORDER BY Sort_Order;
                                 ))
                             )
 
-#  ADD THESE 3 DEBUG LINES HERE:
-                            print(f"DEBUG is_generic: {is_generic}")
-                            print(f"DEBUG pres_part: {pres_part[:100] if pres_part else 'EMPTY'}")
-                            print(f"DEBUG generic_pres: {generic_pres[:100] if generic_pres else 'EMPTY'}")
-
                             if is_generic:
                                 q_text = st.session_state.get("last_custom_query") or ""
                                 # Try CORTEX.COMPLETE first for business-driven insights
                                 cortex_pres = _cortex_complete_prescriptive(content, run_df, q_text)
-                                print(f"DEBUG cortex_pres: {cortex_pres[:100] if cortex_pres else 'EMPTY'}")  #  Keep this one too
-                                # Also generate predictive insights
-                                cortex_pred = _cortex_complete_predictive(content, run_df, q_text)
-                                print(f"DEBUG cortex_pred: {cortex_pred[:100] if cortex_pred else 'EMPTY'}")
                                 if cortex_pres:
                                     pres_part = cortex_pres
                                 else:
@@ -6040,6 +6031,10 @@ ORDER BY Sort_Order;
                                     data_driven = _generate_prescriptive_from_data(content, run_df)
                                     if data_driven:
                                         pres_part = data_driven
+                            
+                            # Always generate predictive insights (independent of prescriptive)
+                            q_text = st.session_state.get("last_custom_query") or ""
+                            cortex_pred = _cortex_complete_predictive(content, run_df, q_text)
                             if desc_part and pres_part:
                                 # desc_esc = html.escape(desc_part).replace("\n", "<br/>")
                                 import re
