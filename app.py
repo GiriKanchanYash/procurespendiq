@@ -785,7 +785,7 @@ def _get_frequent_questions_by_user(n: int = 10):
     except Exception:
         return []
 
-def _load_user_chat_dates() -> list:
+def _load_user_by_session() -> list:
     """Fetches chat dates and GENIE query counts for the last 7 days."""
 
     try:
@@ -796,19 +796,17 @@ def _load_user_chat_dates() -> list:
 
         sql = f"""
             SELECT
-                [ChatDate],
-                COUNT(*) AS QueryCount,
-                MAX([CreatedAt]) AS LastMessageAt,
-                MAX([Question]) AS LastQuestion
+                [SessionId],
+                MIN([CreatedAt]) AS LastMessageAt,
+                MIN([Question]) AS LastQuestion
             FROM {WH_TBL}
             WHERE
                 UPPER([Username]) = UPPER('{user_esc}')
-                AND [Action_Type] = 'GENIE_QUERY'
-                AND [ChatDate] >= DATEADD(DAY, -7, CAST(GETDATE() AS DATE))
+                AND [Action_Type] = 'AI_PREDICTIVE'
             GROUP BY
-                [ChatDate]
+                [SessionId]
             ORDER BY
-                [ChatDate] DESC;
+                [LastMessageAt] DESC;
         """
 
         df = run_warehouse_df(sql)
@@ -818,8 +816,7 @@ def _load_user_chat_dates() -> list:
 
         return [
         {
-            "ChatDate": str(row["ChatDate"]),
-            "count": int(row["QueryCount"]),
+            "session_id": row["SessionId"],
             "last_message_at": str(row["LastMessageAt"]),
             "question": str(row.get("LastQuestion", "") or "")
         }
@@ -877,23 +874,112 @@ def generate_context_summary(
     except Exception as e:
         return f"Summary generation failed: {str(e)}"
 
-def _load_queries_by_date(chat_date: str) -> list:
-    """Fetches all queries for a specific date."""
+def _load_queries_by_Session(SessionId: str) -> list:
+    """Fetches all queries for a specific session."""
     try:
         current_user = _get_current_user_raw() or "UNKNOWN"
         WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
+        user_esc = _sql_escape(current_user)
+        session_esc = _sql_escape(SessionId)
         
         sql = f"""
            SELECT
                 [Question],
+                [DescriptiveAnalysis],
+			    [PredictiveAnalysis],
+			    [PrescriptiveAnalysis],
+                [Sql_Query],
+                [ChatDate],
+                [CreatedAt]
+            FROM {WH_TBL}
+            WHERE UPPER(Username) = UPPER('{user_esc}') AND [SessionId] = '{session_esc}' AND [Action_Type] IN ('AI_PREDICTIVE')
+            ORDER BY [CreatedAt] DESC;
+        """
+        
+        df = run_warehouse_df(sql)
+        
+        if df is None or df.empty:
+            return []
+        
+        return [
+            {
+                "question": (str(row.get("Question") or "")).strip(),
+                "DescriptiveAnalysis": (str(row.get("DescriptiveAnalysis") or "")).strip(),
+                "PredictiveAnalysis": (str(row.get("PredictiveAnalysis") or "")).strip(),
+                "PrescriptiveAnalysis": (str(row.get("PrescriptiveAnalysis") or "")).strip(),
+                "sql": (str(row.get("Sql_Query") or "")).strip(),
+                "timestamp": str(row.get("CreatedAt", ""))
+            }
+            for _, row in df.iterrows()
+        ]
+    except Exception as e:
+        logger.error(f"Could not load chat history for session {SessionId}: {e}")
+        return []
+
+
+def _load_user_chat_dates() -> list:
+    """Fetches unique chat dates with query counts for the current user (last 30 days)."""
+    try:
+        current_user = _get_current_user_raw() or "UNKNOWN"
+        user_esc = _sql_escape(current_user)
+        WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
+        
+        sql = f"""
+            SELECT DISTINCT
+                CAST([CreatedAt] AS DATE) AS ChatDate,
+                COUNT(*) AS count,
+                MAX([CreatedAt]) AS last_message_at,
+                MIN([Question]) AS question
+            FROM {WH_TBL}
+            WHERE UPPER([Username]) = UPPER('{user_esc}')
+                AND [Action_Type] = 'AI_PREDICTIVE'
+                AND CAST([CreatedAt] AS DATE) >= DATEADD(DAY, -30, CAST(GETDATE() AS DATE))
+            GROUP BY CAST([CreatedAt] AS DATE)
+            ORDER BY ChatDate DESC;
+        """
+        
+        df = run_warehouse_df(sql)
+        
+        if df is None or df.empty:
+            return []
+        
+        return [
+            {
+                "ChatDate": str(row.get("ChatDate", "")).split(" ")[0],
+                "count": int(row.get("count", 0)),
+                "last_message_at": str(row.get("last_message_at", "")),
+                "question": str(row.get("question", "")).strip()
+            }
+            for _, row in df.iterrows()
+        ]
+    except Exception as e:
+        logger.error(f"Could not load chat dates: {e}")
+        return []
+
+
+def _load_queries_by_date(chat_date: str) -> list:
+    """Fetches all queries for a specific date with all analysis fields."""
+    try:
+        current_user = _get_current_user_raw() or "UNKNOWN"
+        user_esc = _sql_escape(current_user)
+        date_esc = _sql_escape(chat_date)
+        WH_TBL = f"[{Config.WAREHOUSE_SCHEMA}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]"
+        
+        sql = f"""
+            SELECT
+                [Question],
+                [DescriptiveAnalysis],
+                [PredictiveAnalysis],
+                [PrescriptiveAnalysis],
+                [Sql_Query],
                 [AnswerSummary],
                 [FullAnswer],
-                [Sql_Query],
-                [Action_Type],
-                [Action_Details],
-                [ChatDate]
+                [CreatedAt]
             FROM {WH_TBL}
-            WHERE UPPER(Username) = UPPER('{current_user}') AND [ChatDate] = '{chat_date}' AND [Action_Type] IN ('GENIE_QUERY');
+            WHERE UPPER([Username]) = UPPER('{user_esc}')
+                AND CAST([CreatedAt] AS DATE) = '{date_esc}'
+                AND [Action_Type] IN ('AI_PREDICTIVE')
+            ORDER BY [CreatedAt] DESC;
         """
         
         df = run_warehouse_df(sql)
@@ -906,22 +992,17 @@ def _load_queries_by_date(chat_date: str) -> list:
                 "question": (str(row.get("Question") or "")).strip(),
                 "summary": (str(row.get("AnswerSummary") or "")).strip(),
                 "full_answer": (str(row.get("FullAnswer") or "")).strip(),
+                "DescriptiveAnalysis": (str(row.get("DescriptiveAnalysis") or "")).strip(),
+                "PredictiveAnalysis": (str(row.get("PredictiveAnalysis") or "")).strip(),
+                "PrescriptiveAnalysis": (str(row.get("PrescriptiveAnalysis") or "")).strip(),
                 "sql": (str(row.get("Sql_Query") or "")).strip(),
-                "action_type": (str(row.get("Action_Type") or "")).strip(),
-                "action_details": (str(row.get("Action_Details") or "")).strip()
+                "timestamp": str(row.get("CreatedAt", ""))
             }
             for _, row in df.iterrows()
         ]
     except Exception as e:
-        st.warning(f"Could not load chat history for date {chat_date}: {e}")
+        logger.error(f"Could not load chat history for date {chat_date}: {e}")
         return []
-
-    if preset == "QTD":
-        start = date(today.year, ((today.month - 1)//3)*3 + 1, 1)
-        return start, today
-    if preset == "YTD":
-        return date(today.year, 1, 1), today
-    return today.replace(day=1), today  # Current month
 
 
 
@@ -5227,7 +5308,6 @@ if st.session_state.get('page') == 'genie':
         with st.spinner("Analyzing..."):
             st.session_state.analyst_response = process_genie_query(prefill_q.strip())
         st.rerun()
-
     # ===== GENIE PAGE LAYOUT =====
     
     # Welcome Header
@@ -5411,6 +5491,7 @@ if st.session_state.get('page') == 'genie':
                 st.session_state.show_analysis = False
                 st.session_state.analyst_response = None
                 st.session_state.show_conversation_history = False
+                st.session_state.show_all_conversation_history = False
                 st.session_state.selected_analysis = None
                 st.session_state.show_chat_input = False
                 st.session_state.show_loaded_chat_history = False
@@ -5420,7 +5501,8 @@ if st.session_state.get('page') == 'genie':
             
             # Chats Button - Show all chats
             if st.button("Previous Conversations", use_container_width=True, key="btn_sidebar_chats", help="View your chat history"):
-                st.session_state.show_conversation_history = True
+                st.session_state.show_all_conversation_history = True
+                st.session_state.show_conversation_history = False
                 st.session_state.show_loaded_chat_history = False
                 st.session_state.loaded_chat_history = []
                 st.rerun()
@@ -5584,7 +5666,10 @@ if st.session_state.get('page') == 'genie':
                     chat_bubbles_html = '<div style="display:flex;flex-direction:column;gap:16px;padding:4px 0;">'
                     for idx, query_item in enumerate(chat_history):
                         question = query_item.get("question", "").strip()
-                        summary  = query_item.get("summary", "").strip()
+                        DescriptiveAnalysis  = query_item.get("DescriptiveAnalysis", "").strip()
+                        PredictiveAnalysis = query_item.get("PredictiveAnalysis", "").strip()
+                        PrescriptiveAnalysis = query_item.get("PrescriptiveAnalysis", "").strip()
+                        sql = query_item.get("sql", "").strip()
                         # User bubble - right aligned, blue
                         if question:
                             chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-end;">
@@ -5595,12 +5680,36 @@ if st.session_state.get('page') == 'genie':
                                 </div>
                             </div>'''
                         # AI bubble - left aligned, light grey
-                        if summary:
+                        if DescriptiveAnalysis:
                             chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-start;">
-                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-left:4px;">AI Assistant</div>
+                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-left:4px;">Descriptive Analysis</div>
                                 <div style="background:#F1F5F9;color:#1e293b;border-radius:18px 18px 18px 4px;
                                             padding:12px 16px;max-width:85%;font-size:13px;line-height:1.6;">
-                                    {summary}
+                                    {DescriptiveAnalysis if DescriptiveAnalysis else '_No response generated._'}
+                                </div>
+                            </div>'''
+                        if PredictiveAnalysis:
+                            chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-start;">
+                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-left:4px;">Predictive Analysis</div>
+                                <div style="background:#F1F5F9;color:#1e293b;border-radius:18px 18px 18px 4px;
+                                            padding:12px 16px;max-width:85%;font-size:13px;line-height:1.6;">
+                                    {PredictiveAnalysis if PredictiveAnalysis else '_No response generated._'}
+                                </div>
+                            </div>'''
+                        if PrescriptiveAnalysis:
+                            chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-start;">
+                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-left:4px;">Prescriptive Analysis</div>
+                                <div style="background:#F1F5F9;color:#1e293b;border-radius:18px 18px 18px 4px;
+                                            padding:12px 16px;max-width:85%;font-size:13px;line-height:1.6;">
+                                    {PrescriptiveAnalysis if PrescriptiveAnalysis else '_No response generated._'}
+                                </div>
+                            </div>'''
+                        if sql:
+                            chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-start;">
+                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-left:4px;">SQL Query</div>
+                                <div style="background:#F1F5F9;color:#1e293b;border-radius:18px 18px 18px 4px;
+                                            padding:12px 16px;max-width:85%;font-size:13px;font-family:monospace;line-height:1.6;">
+                                    {sql}
                                 </div>
                             </div>'''
                     chat_bubbles_html += '</div>'
@@ -5609,17 +5718,6 @@ if st.session_state.get('page') == 'genie':
 
             # Show resume conversation section only when NOT viewing chat history
             else:
-                # Blue background section
-                # st.markdown(
-                #     """
-                #     <div style="background-color: #EEF4FF; border-radius: 12px; padding: 20px; margin-bottom: 20px;">
-                #         <h2 style="font-size: 20px; font-weight: 800; color: #0F172A; margin: 0 0 8px 0;">Resume a previous conversation</h2>
-                #         <p style="font-size: 14px; color: #475569; margin: 0;">View chats from your recent activity. Pick one to continue, or ask a new question.</p>
-                #     </div>
-                #     """,
-                #     unsafe_allow_html=True,
-                # )
-
                 # Show conversation history or empty state
                 if st.session_state.get("show_conversation_history", True):
                     # Returns list of {"query": ..., "count": ...}
@@ -5628,14 +5726,12 @@ if st.session_state.get('page') == 'genie':
                     if not ChatDate:
                         st.info("No query history found for your account.")
                     else:
-                        # Render each query as a card
-                        for i, item in enumerate(ChatDate[:]):  # Show up to 6 cards
+                        # Render each conversation date as a structured card (same as render_previous_conversations_view)
+                        for i, item in enumerate(ChatDate):
                             chat_date = item["ChatDate"]
                             freq = item.get("count", 0)
 
-                            # Calculate how long ago this chat was
-                            # Prefer real timestamp (last_message_at) for accuracy;
-                            # fall back to ChatDate (midnight) if not available.
+                            # Calculate "time ago" — prefer real timestamp, fall back to ChatDate midnight
                             try:
                                 _last_msg = item.get("last_message_at", "")
                                 if _last_msg and str(_last_msg) not in ("", "None", "nan"):
@@ -5644,7 +5740,6 @@ if st.session_state.get('page') == 'genie':
                                     except ValueError:
                                         _chat_dt = datetime.strptime(str(_last_msg).strip()[:19], "%Y-%m-%d %H:%M:%S")
                                 else:
-                                    # Fallback: use ChatDate at midnight (less precise)
                                     _chat_dt = datetime.strptime(str(chat_date).strip()[:10], "%Y-%m-%d")
                                 _now = datetime.now()
                                 _diff_minutes = int((_now - _chat_dt).total_seconds() // 60)
@@ -5663,38 +5758,41 @@ if st.session_state.get('page') == 'genie':
                             except Exception:
                                 _time_ago = ""
 
-                            # Native Streamlit card - no raw HTML to avoid escaping issues
                             _is_active = (
                                 st.session_state.get("show_loaded_chat_history", False)
                                 and st.session_state.get("loaded_chat_date") == chat_date
                             )
-                            _msg_label = ""
-                            _question = item.get("question", "  ")
-                            _display_title = f"{_question}\u00a0\u00a0\u00a0 \u00a0\u00a0\u00a0{_time_ago}" if _question else f"Chat on {chat_date}"
-                            
-                            # Full-width clickable card (no Resume button)
-                            _border_style = (
-                                "border:2px solid #16a34a;border-radius:10px;padding:12px 16px;background:#f0fdf4;cursor:pointer;"
-                                if _is_active else
-                                "border:1px solid #E5E7EB;border-radius:10px;padding:12px 16px;background:#FFFFFF;cursor:pointer;"
+                            _question = item.get("question", "").strip() or f"Chat on {chat_date}"
+
+                            # Active badge HTML (inline, not a separate column)
+                            _active_badge = (
+                                '<span style="background:#16a34a;color:#fff;border-radius:5px;'
+                                'padding:2px 8px;font-size:11px;font-weight:700;margin-left:8px;">Active</span>'
+                                if _is_active else ""
                             )
-                            if _is_active:
-                                _active_badge = '<span style="background:#16a34a;color:#fff;border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700;margin-left:8px;">Active</span>'
-                                card_html = (
-                                    f'<div style="{_border_style}">'
-                                    f'<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">{_display_title}{_active_badge}</div>'
-                                    f'<div style="font-size:12px;color:#6B7280;">{_msg_label}</div>'
-                                    f'</div>'
-                                )
-                            else:
-                                card_html = (
-                                    f'<div style="{_border_style}">'
-                                    f'<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">{_display_title}</div>'
-                                    f'<div style="font-size:12px;color:#6B7280;">{_msg_label}</div>'
-                                    f'</div>'
-                                )
-                            
-                            if st.button(f"{_display_title}\n{_msg_label}", use_container_width=True, key=f"chat_card_{i}"):
+
+                            # Card border changes when active
+                            _card_border = "2px solid #16a34a" if _is_active else "1px solid #E5E7EB"
+                            _card_bg = "#f0fdf4" if _is_active else "#FFFFFF"
+
+                            # Render the visual card (HTML-only, non-interactive)
+                            st.markdown(f"""
+                            <div style="
+                                border:{_card_border};
+                                border-radius:10px;
+                                padding:12px 16px;
+                                background:{_card_bg};
+                                margin-bottom:4px;
+                            ">
+                                <div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">
+                                    {html.escape(_question)}{_active_badge}
+                                </div>
+                                <div style="font-size:12px;color:#6B7280;">{_time_ago}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                            # Invisible Streamlit button placed directly below triggers the load
+                            if st.button("Open", use_container_width=True, key=f"chat_card_{i}"):
                                 with st.spinner("Loading chat history..."):
                                     chat_queries = _load_queries_by_date(chat_date)
                                     if chat_queries:
