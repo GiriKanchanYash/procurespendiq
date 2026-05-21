@@ -5662,56 +5662,246 @@ if st.session_state.get('page') == 'genie':
                     
                     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 
-                    # Build full chat bubble HTML in one block
-                    chat_bubbles_html = '<div style="display:flex;flex-direction:column;gap:16px;padding:4px 0;">'
+                    # ============================================================================
+                    # DIRECT REPLACEMENT FOR LINES 5666-5717 IN app.py
+                    # ============================================================================
+                    # 
+                    # Simply replace the old code block (lines 5666-5717) with the code below.
+                    # This is a drop-in replacement with no additional imports needed.
+                    #
+
+                    # Inject modern CSS styling for the chat interface
+                    st.markdown("""
+                    <style>
+                        :root {
+                            --primary-blue: #3B5BDB;
+                            --primary-blue-dark: #2D41B8;
+                            --primary-blue-light: #4C6EFF;
+                            --bg-light: #FFFFFF;
+                            --bg-secondary: #F8FAFC;
+                            --bg-tertiary: #F1F5F9;
+                            --text-primary: #0F172A;
+                            --text-secondary: #475569;
+                            --text-muted: #64748B;
+                            --border-color: #E2E8F0;
+                            --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+                            --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07);
+                        }
+                        
+                        .chat-container {
+                            display: flex;
+                            flex-direction: column;
+                            gap: 20px;
+                            padding: 24px 8px;
+                            background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+                            border-radius: 16px;
+                            margin: 16px 0;
+                        }
+                        
+                        .message-group {
+                            display: flex;
+                            flex-direction: column;
+                            gap: 12px;
+                            animation: slideIn 0.4s ease-out;
+                        }
+                        
+                        .user-message-wrapper {
+                            display: flex;
+                            justify-content: flex-end;
+                            gap: 8px;
+                        }
+                        
+                        .user-label {
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: var(--text-muted);
+                            text-transform: uppercase;
+                            letter-spacing: 0.5px;
+                            margin-right: 4px;
+                            align-self: flex-end;
+                            margin-bottom: 6px;
+                        }
+                        
+                        .user-bubble {
+                            background: linear-gradient(135deg, var(--primary-blue) 0%, var(--primary-blue-dark) 100%);
+                            color: #FFFFFF;
+                            border-radius: 20px 20px 4px 20px;
+                            padding: 14px 18px;
+                            max-width: 110%;
+                            font-size: 14px;
+                            font-weight: 500;
+                            line-height: 1.6;
+                            box-shadow: var(--shadow-md);
+                            word-wrap: break-word;
+                            border: 1px solid rgba(255, 255, 255, 0.2);
+                            transition: all 0.3s ease;
+                        }
+                        
+                        .user-bubble:hover {
+                            box-shadow: 0 6px 16px rgba(59, 91, 219, 0.3);
+                            transform: translateY(-2px);
+                        }
+                        
+                        .ai-response-group {
+                            display: flex;
+                            justify-content: flex-start;
+                            flex-direction: column;
+                            gap: 10px;
+                        }
+                        
+                        .response-bubble {
+                            background: var(--bg-tertiary);
+                            color: var(--text-primary);
+                            border-radius: 20px 20px 20px 4px;
+                            padding: 14px 18px;
+                            max-width: 75%;
+                            font-size: 13px;
+                            line-height: 1.7;
+                            border: 1px solid var(--border-color);
+                            box-shadow: var(--shadow-sm);
+                            word-wrap: break-word;
+                            transition: all 0.3s ease;
+                        }
+                        
+                        .response-bubble:hover {
+                            background: #E8F0FE;
+                            border-color: var(--primary-blue);
+                        }
+                        
+                        .response-label {
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: var(--text-muted);
+                            text-transform: uppercase;
+                            letter-spacing: 0.5px;
+                            margin-left: 4px;
+                            display: flex;
+                            align-items: center;
+                            gap: 6px;
+                        }
+                        
+                        .response-label::before {
+                            content: '';
+                            width: 6px;
+                            height: 6px;
+                            border-radius: 50%;
+                            background: currentColor;
+                        }
+                        
+                        .descriptive-label { color: #10B981; }
+                        .predictive-label { color: #F59E0B; }
+                        .prescriptive-label { color: #8B5CF6; }
+                        .sql-label { color: #EF4444; }
+                        
+                        .sql-bubble {
+                            background: #1E293B;
+                            color: #E2E8F0;
+                            border-radius: 12px;
+                            padding: 16px;
+                            font-family: 'Fira Code', 'Courier New', monospace;
+                            font-size: 12px;
+                            line-height: 1.8;
+                            overflow-x: auto;
+                            border: 1px solid #334155;
+                            max-width: 75%;
+                        }
+                        
+                        .sql-bubble::-webkit-scrollbar {
+                            height: 4px;
+                        }
+                        
+                        .sql-bubble::-webkit-scrollbar-track {
+                            background: #0F172A;
+                            border-radius: 10px;
+                        }
+                        
+                        .sql-bubble::-webkit-scrollbar-thumb {
+                            background: #475569;
+                            border-radius: 10px;
+                        }
+                        
+                        .sql-bubble::-webkit-scrollbar-thumb:hover {
+                            background: #64748B;
+                        }
+                        
+                        .empty-state {
+                            color: var(--text-muted);
+                            font-style: italic;
+                            opacity: 0.8;
+                        }
+                        
+                        @keyframes slideIn {
+                            from {
+                                opacity: 0;
+                                transform: translateY(10px);
+                            }
+                            to {
+                                opacity: 1;
+                                transform: translateY(0);
+                            }
+                        }
+                        
+                        @media (max-width: 768px) {
+                            .user-bubble { max-width: 85%; }
+                            .response-bubble { max-width: 90%; }
+                            .sql-bubble { max-width: 90%; }
+                        }
+                    </style>
+                    """, unsafe_allow_html=True)
+
+                    # Build and render chat interface
+                    chat_bubbles_html = '<div class="chat-container">'
+
                     for idx, query_item in enumerate(chat_history):
                         question = query_item.get("question", "").strip()
-                        DescriptiveAnalysis  = query_item.get("DescriptiveAnalysis", "").strip()
+                        DescriptiveAnalysis = query_item.get("DescriptiveAnalysis", "").strip()
                         PredictiveAnalysis = query_item.get("PredictiveAnalysis", "").strip()
                         PrescriptiveAnalysis = query_item.get("PrescriptiveAnalysis", "").strip()
                         sql = query_item.get("sql", "").strip()
-                        # User bubble - right aligned, blue
+                        
+                        chat_bubbles_html += '<div class="message-group">'
+                        
+                        # User message bubble
                         if question:
-                            chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-end;">
-                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-right:4px;">You</div>
-                                <div style="background:#3B5BDB;color:#fff;border-radius:18px 18px 4px 18px;
-                                            padding:12px 16px;max-width:80%;font-size:13px;font-weight:500;line-height:1.5;">
-                                    {question}
+                            chat_bubbles_html += f'''<div class="user-message-wrapper">
+                                <div style="display:flex;flex-direction:column;align-items:flex-end;">
+                                    <div class="user-label">You</div>
+                                    <div class="user-bubble">{question}</div>
                                 </div>
                             </div>'''
-                        # AI bubble - left aligned, light grey
-                        if DescriptiveAnalysis:
-                            chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-start;">
-                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-left:4px;">Descriptive Analysis</div>
-                                <div style="background:#F1F5F9;color:#1e293b;border-radius:18px 18px 18px 4px;
-                                            padding:12px 16px;max-width:85%;font-size:13px;line-height:1.6;">
-                                    {DescriptiveAnalysis if DescriptiveAnalysis else '_No response generated._'}
-                                </div>
-                            </div>'''
-                        if PredictiveAnalysis:
-                            chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-start;">
-                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-left:4px;">Predictive Analysis</div>
-                                <div style="background:#F1F5F9;color:#1e293b;border-radius:18px 18px 18px 4px;
-                                            padding:12px 16px;max-width:85%;font-size:13px;line-height:1.6;">
-                                    {PredictiveAnalysis if PredictiveAnalysis else '_No response generated._'}
-                                </div>
-                            </div>'''
-                        if PrescriptiveAnalysis:
-                            chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-start;">
-                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-left:4px;">Prescriptive Analysis</div>
-                                <div style="background:#F1F5F9;color:#1e293b;border-radius:18px 18px 18px 4px;
-                                            padding:12px 16px;max-width:85%;font-size:13px;line-height:1.6;">
-                                    {PrescriptiveAnalysis if PrescriptiveAnalysis else '_No response generated._'}
-                                </div>
-                            </div>'''
-                        if sql:
-                            chat_bubbles_html += f'''<div style="display:flex;flex-direction:column;align-items:flex-start;">
-                                <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:4px;margin-left:4px;">SQL Query</div>
-                                <div style="background:#F1F5F9;color:#1e293b;border-radius:18px 18px 18px 4px;
-                                            padding:12px 16px;max-width:85%;font-size:13px;font-family:monospace;line-height:1.6;">
-                                    {sql}
-                                </div>
-                            </div>'''
+                        
+                        # AI responses
+                        if any([DescriptiveAnalysis, PredictiveAnalysis, PrescriptiveAnalysis, sql]):
+                            chat_bubbles_html += '<div class="ai-response-group">'
+                            
+                            if DescriptiveAnalysis:
+                                chat_bubbles_html += f'''<div>
+                                    <div class="response-label descriptive-label">Descriptive Analysis</div>
+                                    <div class="response-bubble">{DescriptiveAnalysis}</div>
+                                </div>'''
+                            
+                            if PredictiveAnalysis:
+                                chat_bubbles_html += f'''<div>
+                                    <div class="response-label predictive-label">Predictive Analysis</div>
+                                    <div class="response-bubble">{PredictiveAnalysis}</div>
+                                </div>'''
+                            
+                            if PrescriptiveAnalysis:
+                                chat_bubbles_html += f'''<div>
+                                    <div class="response-label prescriptive-label">Prescriptive Analysis</div>
+                                    <div class="response-bubble">{PrescriptiveAnalysis}</div>
+                                </div>'''
+                            
+                            if sql:
+                                chat_bubbles_html += f'''<div>
+                                    <div class="response-label sql-label">SQL Query</div>
+                                    <div class="sql-bubble">{sql}</div>
+                                </div>'''
+                            
+                            chat_bubbles_html += '</div>'
+                        
+                        chat_bubbles_html += '</div>'
+
                     chat_bubbles_html += '</div>'
                     st.markdown(chat_bubbles_html, unsafe_allow_html=True)
                     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
