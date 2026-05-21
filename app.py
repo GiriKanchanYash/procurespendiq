@@ -785,7 +785,7 @@ def _get_frequent_questions_by_user(n: int = 10):
     except Exception:
         return []
 
-def _load_user_conversation() -> list:
+def _load_user_chat_dates() -> list:
     """Fetches chat dates and GENIE query counts for the last 7 days."""
 
     try:
@@ -796,33 +796,35 @@ def _load_user_conversation() -> list:
 
         sql = f"""
             SELECT
-                [SessionId],
+                [ChatDate],
+                COUNT(*) AS QueryCount,
                 MAX([CreatedAt]) AS LastMessageAt,
-                MIN([Question]) AS FirstQuestion
+                MAX([Question]) AS LastQuestion
             FROM {WH_TBL}
             WHERE
                 UPPER([Username]) = UPPER('{user_esc}')
-                AND [Action_Type] = 'AI_PREDICTIVE'
+                AND [Action_Type] = 'GENIE_QUERY'
+                AND [ChatDate] >= DATEADD(DAY, -7, CAST(GETDATE() AS DATE))
             GROUP BY
-            [SessionId]
+                [ChatDate]
             ORDER BY
-                [LastMessageAt] DESC;
+                [ChatDate] DESC;
         """
 
         df = run_warehouse_df(sql)
 
         if df is None or df.empty:
             return []
-             
-        return [
-                    {
-                        "session_id": str(row["SessionId"]),
-                        "last_message_at": str(row["LastMessageAt"]),
-                        "first_question": str(row.get("FirstQuestion", "") or ""),
-                    }
-                    for _, row in df.iterrows()
-                ]
 
+        return [
+        {
+            "ChatDate": str(row["ChatDate"]),
+            "count": int(row["QueryCount"]),
+            "last_message_at": str(row["LastMessageAt"]),
+            "question": str(row.get("LastQuestion", "") or "")
+        }
+        for _, row in df.iterrows()
+        ]
 
     except Exception as e:
         st.warning(f"Could not load query history: {e}")
@@ -1095,7 +1097,7 @@ def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> 
 
     # Limit payload size
     if len(data_str) > 15000:
-        data_str = data_str[:15000] + "\n(truncated)"
+        data_str = data_str[:] + "\n(truncated)"
     
     prompt = (
         "You are a procurement business analyst. The user asked a question "
@@ -1127,9 +1129,9 @@ def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> 
 
             # 🔥 Middleware Logging (SUCCESS)
             log_event("AI_INSIGHT", {
-                "summary": result_clean[:200],
+                "summary": result_clean[:],
                 "full_answer": result_clean,
-                "sql": " | ".join(executed_sqls)[:1000],
+                "sql": " | ".join(executed_sqls)[:],
                 "relevance": 0.95,
                 "details": f"LLM response time: {duration}s"
             })
@@ -1198,7 +1200,7 @@ def _cortex_complete_predictive(content: list, run_df_func, question: str) -> st
 
     # Limit payload size
     if len(data_str) > 15000:
-        data_str = data_str[:15000] + "\n(truncated)"
+        data_str = data_str[:] + "\n(truncated)"
     
     prompt = (
         "You are a procurement business analyst with forecasting expertise. The user asked a question "
@@ -1224,15 +1226,15 @@ def _cortex_complete_predictive(content: list, run_df_func, question: str) -> st
             # Save to session memory (existing logic)
             save_query_to_session_memory(
                 question,
-                " | ".join(executed_sqls)[:500],
-                result_clean[:200]
+                " | ".join(executed_sqls)[:],
+                result_clean[:]
             )
 
             # 🔥 Middleware Logging (SUCCESS)
             log_event("AI_PREDICTIVE", {
-                "summary": result_clean[:200],
+                "summary": result_clean[:],
                 "full_answer": result_clean,
-                "sql": " | ".join(executed_sqls)[:1000],
+                "sql": " | ".join(executed_sqls)[:],
                 "relevance": 0.95,
                 "details": f"LLM response time: {duration}s"
             })
@@ -5169,7 +5171,7 @@ if st.session_state.get('page') == 'genie':
                             if stmt_filters:
                                 filter_parts.append(stmt_filters)
                         tables_used = ",".join(tables_set)
-                        filters_applied = " || ".join(filter_parts)[:900]
+                        filters_applied = " || ".join(filter_parts)[:]
                 except Exception:
                     pass
 
