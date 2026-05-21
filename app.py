@@ -798,7 +798,8 @@ def _load_user_chat_dates() -> list:
             SELECT
                 [ChatDate],
                 COUNT(*) AS QueryCount,
-                MAX([CreatedAt]) AS LastMessageAt
+                MAX([CreatedAt]) AS LastMessageAt,
+                MAX([Question]) AS LastQuestion
             FROM {WH_TBL}
             WHERE
                 UPPER([Username]) = UPPER('{user_esc}')
@@ -816,12 +817,13 @@ def _load_user_chat_dates() -> list:
             return []
 
         return [
-            {
-                "ChatDate": str(row["ChatDate"]),
-                "count": int(row["QueryCount"]),
-                "last_message_at": str(row["LastMessageAt"])
-            }
-            for _, row in df.iterrows()
+        {
+            "ChatDate": str(row["ChatDate"]),
+            "count": int(row["QueryCount"]),
+            "last_message_at": str(row["LastMessageAt"]),
+            "question": str(row.get("LastQuestion", "") or "")
+        }
+        for _, row in df.iterrows()
         ]
 
     except Exception as e:
@@ -5417,7 +5419,7 @@ if st.session_state.get('page') == 'genie':
                 st.rerun()
             
             # Chats Button - Show all chats
-            if st.button("💬 Chats", use_container_width=True, key="btn_sidebar_chats", help="View your chat history"):
+            if st.button("Previous Conversations", use_container_width=True, key="btn_sidebar_chats", help="View your chat history"):
                 st.session_state.show_conversation_history = True
                 st.session_state.show_loaded_chat_history = False
                 st.session_state.loaded_chat_history = []
@@ -5457,12 +5459,8 @@ if st.session_state.get('page') == 'genie':
             </div>
             """, unsafe_allow_html=True)
             
-            header_col, btn1, btn2, btn3, btn4 = st.columns([2, 1, 1, 1, 1], gap="small")
+            header_col, btn2, btn3, btn4 = st.columns([2, 1, 1, 1], gap="small")
             
-            with btn1:
-                if st.button("Chats", use_container_width=True, key="btn_chats"):
-                    st.session_state.show_conversation_history = True
-                    st.rerun()
             with btn2:
                 if st.button("Summarize", use_container_width=True, key="btn_summarize"):
                     session_qs = st.session_state.get("genie_queries", [])
@@ -5612,15 +5610,15 @@ if st.session_state.get('page') == 'genie':
             # Show resume conversation section only when NOT viewing chat history
             else:
                 # Blue background section
-                st.markdown(
-                    """
-                    <div style="background-color: #EEF4FF; border-radius: 12px; padding: 20px; margin-bottom: 20px;">
-                        <h2 style="font-size: 20px; font-weight: 800; color: #0F172A; margin: 0 0 8px 0;">Resume a previous conversation</h2>
-                        <p style="font-size: 14px; color: #475569; margin: 0;">View chats from your recent activity. Pick one to continue, or ask a new question.</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                # st.markdown(
+                #     """
+                #     <div style="background-color: #EEF4FF; border-radius: 12px; padding: 20px; margin-bottom: 20px;">
+                #         <h2 style="font-size: 20px; font-weight: 800; color: #0F172A; margin: 0 0 8px 0;">Resume a previous conversation</h2>
+                #         <p style="font-size: 14px; color: #475569; margin: 0;">View chats from your recent activity. Pick one to continue, or ask a new question.</p>
+                #     </div>
+                #     """,
+                #     unsafe_allow_html=True,
+                # )
 
                 # Show conversation history or empty state
                 if st.session_state.get("show_conversation_history", True):
@@ -5670,8 +5668,9 @@ if st.session_state.get('page') == 'genie':
                                 st.session_state.get("show_loaded_chat_history", False)
                                 and st.session_state.get("loaded_chat_date") == chat_date
                             )
-                            _msg_label = str(freq) + " message" + ("s" if freq != 1 else "") + ("  ·  " + _time_ago if _time_ago else "")
-                            _display_title = f"Chat on {chat_date}"
+                            _msg_label = ""
+                            _question = item.get("question", "  ")
+                            _display_title = f"{_question}\u00a0\u00a0\u00a0 \u00a0\u00a0\u00a0{_time_ago}" if _question else f"Chat on {chat_date}"
                             
                             # Full-width clickable card (no Resume button)
                             _border_style = (
