@@ -5402,6 +5402,26 @@ if st.session_state.get('page') == 'genie':
                             st.rerun()
                 else:
                     st.caption("Ask questions to see most frequent across all users.")
+            
+            # New Chat Button - Claude/Copilot style
+            st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+            if st.button("+ New Chat", use_container_width=True, key="btn_new_chat", help="Start a fresh conversation"):
+                st.session_state.show_analysis = False
+                st.session_state.analyst_response = None
+                st.session_state.show_conversation_history = False
+                st.session_state.selected_analysis = None
+                st.session_state.show_chat_input = False
+                st.session_state.show_loaded_chat_history = False
+                st.session_state.loaded_chat_history = []
+                st.session_state.loaded_chat_date = ""
+                st.rerun()
+            
+            # Chats Button - Show all chats
+            if st.button("💬 Chats", use_container_width=True, key="btn_sidebar_chats", help="View your chat history"):
+                st.session_state.show_conversation_history = True
+                st.session_state.show_loaded_chat_history = False
+                st.session_state.loaded_chat_history = []
+                st.rerun()
         # Removed stray closing div that could render as text
 
     current_user = _get_current_user_raw() or "Unknown User"
@@ -5411,16 +5431,33 @@ if st.session_state.get('page') == 'genie':
     with right_col:
         with st.container(border=True):
 
-            # Header row with title and buttons
-            header_col, btn1, btn2, btn3, btn4 = st.columns([2, 1, 1, 1, 1], gap="small")
+            # Header row with title and buttons - Claude/Copilot style
+            st.markdown("""
+            <style>
+            .genie-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 12px 0;
+                margin-bottom: 12px;
+                border-bottom: 1px solid #e2e8f0;
+            }
+            .genie-title {
+                font-size: 22px;
+                font-weight: 800;
+                color: #0F172A;
+            }
+            .genie-button-group {
+                display: flex;
+                gap: 8px;
+            }
+            </style>
+            <div class="genie-header">
+                <div class="genie-title">AI Assistant</div>
+            </div>
+            """, unsafe_allow_html=True)
             
-            with header_col:
-                st.markdown(
-                    """
-                    <div style="font-size: 20px; font-weight: 800; color: #0F172A; padding-top: 8px;">AI Assistant</div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+            header_col, btn1, btn2, btn3, btn4 = st.columns([2, 1, 1, 1, 1], gap="small")
             
             with btn1:
                 if st.button("Chats", use_container_width=True, key="btn_chats"):
@@ -5635,43 +5672,39 @@ if st.session_state.get('page') == 'genie':
                             )
                             _msg_label = str(freq) + " message" + ("s" if freq != 1 else "") + ("  ·  " + _time_ago if _time_ago else "")
                             _display_title = f"Chat on {chat_date}"
-                            card_col1, card_col2 = st.columns([4.4, 1.6], gap="small")
-                            with card_col1:
-                                _border_style = (
-                                    "border:2px solid #16a34a;border-radius:10px;padding:12px 16px;background:#f0fdf4;"
-                                    if _is_active else
-                                    "border:1px solid #E5E7EB;border-radius:10px;padding:12px 16px;background:#FFFFFF;"
+                            
+                            # Full-width clickable card (no Resume button)
+                            _border_style = (
+                                "border:2px solid #16a34a;border-radius:10px;padding:12px 16px;background:#f0fdf4;cursor:pointer;"
+                                if _is_active else
+                                "border:1px solid #E5E7EB;border-radius:10px;padding:12px 16px;background:#FFFFFF;cursor:pointer;"
+                            )
+                            if _is_active:
+                                _active_badge = '<span style="background:#16a34a;color:#fff;border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700;margin-left:8px;">Active</span>'
+                                card_html = (
+                                    f'<div style="{_border_style}">'
+                                    f'<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">{_display_title}{_active_badge}</div>'
+                                    f'<div style="font-size:12px;color:#6B7280;">{_msg_label}</div>'
+                                    f'</div>'
                                 )
-                                if _is_active:
-                                    _active_badge = '<span style="background:#16a34a;color:#fff;border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700;margin-left:8px;">Active</span>'
-                                    st.markdown(
-                                        f'<div style="{_border_style}">'
-                                        f'<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">{_display_title}{_active_badge}</div>'
-                                        f'<div style="font-size:12px;color:#6B7280;">{_msg_label}</div>'
-                                        f'</div>',
-                                        unsafe_allow_html=True
-                                    )
-                                else:
-                                    st.markdown(
-                                        f'<div style="{_border_style}">'
-                                        f'<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">{_display_title}</div>'
-                                        f'<div style="font-size:12px;color:#6B7280;">{_msg_label}</div>'
-                                        f'</div>',
-                                        unsafe_allow_html=True
-                                    )
-                            with card_col2:
-                                st.write("")
-                                if not _is_active:
-                                    if st.button("Resume", key=f"resume_query_{i}", use_container_width=True, type="primary"):
-                                        with st.spinner("Loading chat history..."):
-                                            chat_queries = _load_queries_by_date(chat_date)
-                                            if chat_queries:
-                                                st.session_state["loaded_chat_date"] = chat_date
-                                                st.session_state["loaded_chat_history"] = chat_queries
-                                                st.session_state["show_loaded_chat_history"] = True
-                                            else:
-                                                st.warning(f"No chat history found for {chat_date}")
-                                        st.rerun()
+                            else:
+                                card_html = (
+                                    f'<div style="{_border_style}">'
+                                    f'<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">{_display_title}</div>'
+                                    f'<div style="font-size:12px;color:#6B7280;">{_msg_label}</div>'
+                                    f'</div>'
+                                )
+                            
+                            if st.button(f"{_display_title}\n{_msg_label}", use_container_width=True, key=f"chat_card_{i}"):
+                                with st.spinner("Loading chat history..."):
+                                    chat_queries = _load_queries_by_date(chat_date)
+                                    if chat_queries:
+                                        st.session_state["loaded_chat_date"] = chat_date
+                                        st.session_state["loaded_chat_history"] = chat_queries
+                                        st.session_state["show_loaded_chat_history"] = True
+                                    else:
+                                        st.warning(f"No chat history found for {chat_date}")
+                                st.rerun()
                             st.write("")
                 else:
                     # Empty state - Start a Conversation
@@ -6139,20 +6172,21 @@ ORDER BY Sort_Order;
                                         with st.expander("View SQL used"):
                                             st.code(sql, language="sql")
             
-            # Chat Input at bottom (form so Enter key submits the question)
+            # Chat Input at bottom - Claude/Copilot style
             st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
             
+            # Input form with better styling
             with st.form("genie_question_form", clear_on_submit=False):
-                input_col, btn_col = st.columns([0.88, 0.12])
-                with input_col:
+                col_input, col_send = st.columns([0.92, 0.08], gap="small")
+                with col_input:
                     user_query = st.text_input(
                         "Ask a question",
-                        placeholder="Ask a question here...",
+                        placeholder="Ask a question about your procurement data...",
                         label_visibility="collapsed",
                         key=f"genie_chat_input_{st.session_state.genie_input_version}"
                     )
-                with btn_col:
-                    send_clicked = st.form_submit_button("→")
+                with col_send:
+                    send_clicked = st.form_submit_button("⏎", use_container_width=True, help="Press Enter or click to send")
             
             if send_clicked and user_query:
                 st.session_state.selected_analysis = "custom"
