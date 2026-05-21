@@ -22,7 +22,7 @@ from datetime import date, timedelta, datetime
 import uuid
 from typing import Optional
 from auto_suspend import inject_idle_timer
-from genie_middleware import set_log_context, log_event
+from genie_middleware import set_log_context, log_event, update_analysis_insights
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -785,7 +785,7 @@ def _get_frequent_questions_by_user(n: int = 10):
     except Exception:
         return []
 
-def _load_user_chat_dates() -> list:
+def _load_user_conversation() -> list:
     """Fetches chat dates and GENIE query counts for the last 7 days."""
 
     try:
@@ -796,35 +796,33 @@ def _load_user_chat_dates() -> list:
 
         sql = f"""
             SELECT
-                [ChatDate],
-                COUNT(*) AS QueryCount,
+                [SessionId],
                 MAX([CreatedAt]) AS LastMessageAt,
-                MAX([Question]) AS LastQuestion
+                MIN([Question]) AS FirstQuestion
             FROM {WH_TBL}
             WHERE
                 UPPER([Username]) = UPPER('{user_esc}')
-                AND [Action_Type] = 'GENIE_QUERY'
-                AND [ChatDate] >= DATEADD(DAY, -7, CAST(GETDATE() AS DATE))
+                AND [Action_Type] = 'AI_PREDICTIVE'
             GROUP BY
-                [ChatDate]
+            [SessionId]
             ORDER BY
-                [ChatDate] DESC;
+                [LastMessageAt] DESC;
         """
 
         df = run_warehouse_df(sql)
 
         if df is None or df.empty:
             return []
-
+             
         return [
-        {
-            "ChatDate": str(row["ChatDate"]),
-            "count": int(row["QueryCount"]),
-            "last_message_at": str(row["LastMessageAt"]),
-            "question": str(row.get("LastQuestion", "") or "")
-        }
-        for _, row in df.iterrows()
-        ]
+                    {
+                        "session_id": str(row["SessionId"]),
+                        "last_message_at": str(row["LastMessageAt"]),
+                        "first_question": str(row.get("FirstQuestion", "") or ""),
+                    }
+                    for _, row in df.iterrows()
+                ]
+
 
     except Exception as e:
         st.warning(f"Could not load query history: {e}")
@@ -5155,7 +5153,7 @@ if st.session_state.get('page') == 'genie':
                                         question=query,
                                         full_answer=result_full_answer,
                                         sql_query=result_sql
-                                    )[:20000]
+                                    )[:]
                     if sql_statements:
                         sql_block_count = len(sql_statements)
                         result_sql = "\n\n-- NEXT BLOCK --\n\n".join(sql_statements)
@@ -5194,7 +5192,7 @@ if st.session_state.get('page') == 'genie':
             if not result_summary and query:
                 result_summary = query[:200]
             if not result_full_answer and isinstance(response, dict):
-                result_full_answer = str(response)[:4000]
+                result_full_answer = str(response)[:]
             details = (
                 f"{details}; has_message={bool(isinstance(response, dict) and 'message' in response)}; "
                 f"sql_blocks={sql_block_count}"
@@ -6067,6 +6065,18 @@ ORDER BY Sort_Order;
                             # Always generate predictive insights (independent of prescriptive)
                             q_text = st.session_state.get("last_custom_query") or ""
                             cortex_pred = _cortex_complete_predictive(content, run_df, q_text)
+
+                            # ── Persist the exact text shown to the user ──────────────────
+                            try:
+                                update_analysis_insights(
+                                    descriptive=desc_part or "",
+                                    prescriptive=pres_part or "",
+                                    predictive=cortex_pred or "",
+                                )
+                            except Exception as _uai_err:
+                                logger.warning(f"update_analysis_insights failed: {_uai_err}")
+                            # ─────────────────────────────────────────────────────────────
+
                             if desc_part and pres_part:
                                 # desc_esc = html.escape(desc_part).replace("\n", "<br/>")
                                 import re

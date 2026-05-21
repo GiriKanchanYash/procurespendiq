@@ -85,30 +85,31 @@ CREATE TABLE [{WH}].[DATA_VALIDATION_RESULTS] (
 """
 _DDL_LONG_TERM_MEMORY = f"""
 CREATE TABLE [{WH}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}](
-                    ChatId            BIGINT IDENTITY NOT NULL,
-                    SessionId         VARCHAR(64)  NOT NULL,
-                    Username          VARCHAR(100) NOT NULL,
-                    user_id           VARCHAR(64)  NOT NULL,
-                    Question          VARCHAR(MAX) NOT NULL,
-                    AnswerSummary     VARCHAR(MAX) NULL,
-                    FullAnswer        VARCHAR(MAX) NULL,
-                    Context_Hash      VARCHAR(64)  NOT NULL,
-                    Sql_Query         VARCHAR(MAX) NULL,
-                    Tables_Used       VARCHAR(1000) NULL,
-                    Filters_Applied   VARCHAR(1000) NULL,
-                    Relevance_Score   FLOAT NULL,
-                    Usage_Count       INT NULL,
-                    Last_Accessed_At  DATETIME2(6) NULL,
-                    CacheKey          VARCHAR(128) NULL,
-                    Frequency         INT NOT NULL,
-                    Action_Type       VARCHAR(50) NOT NULL,
-                    Action_Details    VARCHAR(MAX) NULL,
-                    ChatDate          DATE NOT NULL,
-                    CreatedAt         DATETIME2(6) NOT NULL,
-                    UpdatedAt         DATETIME2(6) NOT NULL
+                    ChatId              BIGINT NOT NULL,
+                    SessionId           VARCHAR(64)  NOT NULL,
+                    Username            VARCHAR(100) NOT NULL,
+                    user_id             VARCHAR(64)  NOT NULL,
+                    Question            VARCHAR(MAX) NOT NULL,
+                    AnswerSummary       VARCHAR(MAX) NULL,
+                    PredictiveAnalysis      VARCHAR(MAX) NULL,
+                    PrescriptiveAnalysis    VARCHAR(MAX) NULL,
+                    DescriptiveAnalysis     VARCHAR(MAX) NULL,
+                    Context_Hash        VARCHAR(64)  NOT NULL,
+                    Sql_Query           VARCHAR(MAX) NULL,
+                    Tables_Used         VARCHAR(1000) NULL,
+                    Filters_Applied     VARCHAR(1000) NULL,
+                    Relevance_Score     FLOAT NULL,
+                    Usage_Count         INT NULL,
+                    Last_Accessed_At    VARCHAR(30) NULL,
+                    CacheKey            VARCHAR(128) NULL,
+                    Frequency           INT NOT NULL,
+                    Action_Type         VARCHAR(50) NOT NULL,
+                    Action_Details      VARCHAR(MAX) NULL,
+                    ChatDate            DATE NOT NULL,
+                    CreatedAt           VARCHAR(30) NOT NULL,
+                    UpdatedAt           VARCHAR(30) NOT NULL
 )
 """
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

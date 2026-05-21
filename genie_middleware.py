@@ -56,13 +56,16 @@ def log_event(event_type: str, payload: dict):
         filters = _sql_escape(payload.get("filters", ""))
         details = _sql_escape(payload.get("details", ""))
         cache_key = _sql_escape(payload.get("cache_key", ""))
+        descriptive = _sql_escape(payload.get("descriptive_analysis", ""))
+        prescriptive = _sql_escape(payload.get("prescriptive_analysis", ""))
+        predictive = _sql_escape(payload.get("predictive_analysis", ""))
 
         relevance = payload.get("relevance", 0.0)
 
         user_esc = _sql_escape(user)
         question_esc = _sql_escape(question)
 
-        #get existing frequency
+        # get existing frequency
         existing_frequency = get_existing_question_frequency(question_esc, user_esc)
         new_frequency = existing_frequency + 1
 
@@ -74,6 +77,9 @@ def log_event(event_type: str, payload: dict):
             Question,
             AnswerSummary,
             FullAnswer,
+            DescriptiveAnalysis,
+            PrescriptiveAnalysis,
+            PredictiveAnalysis,
             Context_Hash,
             Sql_Query,
             Tables_Used,
@@ -96,6 +102,9 @@ def log_event(event_type: str, payload: dict):
             '{question_esc}',
             '{summary}',
             '{full}',
+            '{descriptive}',
+            '{prescriptive}',
+            '{predictive}',
             '{context_hash}',
             '{sql_query}',
             '{tables}',
@@ -115,7 +124,6 @@ def log_event(event_type: str, payload: dict):
 
         run_warehouse_non_query(sql)
 
-        
         update_frequency = f"""
         UPDATE [{WH}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]
         SET
@@ -130,6 +138,59 @@ def log_event(event_type: str, payload: dict):
 
     except Exception as e:
         logger.warning(f"[Middleware] Logging failed: {e}")
+
+
+# -------------------------------
+# Update Analysis Insights (Descriptive / Prescriptive / Predictive)
+# Called after UI rendering when the three analysis strings are available.
+# -------------------------------
+def update_analysis_insights(
+    descriptive: str,
+    prescriptive: str,
+    predictive: str,
+):
+    """
+    Patches the most-recently inserted row for the current question + user
+    with the rendered Descriptive, Prescriptive, and Predictive analysis text.
+    This is called right after the UI expanders are rendered so the exact
+    content shown to the user is persisted.
+    """
+    try:
+        ctx = get_log_context()
+        question = ctx.get("question", "")
+        user = ctx.get("user", "UNKNOWN")
+
+        if not question:
+            return
+
+        user_esc = _sql_escape(user)
+        question_esc = _sql_escape(question)
+        desc_esc = _sql_escape(descriptive or "")
+        pres_esc = _sql_escape(prescriptive or "")
+        pred_esc = _sql_escape(predictive or "")
+
+        sql = f"""
+        UPDATE [{WH}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]
+        SET
+            DescriptiveAnalysis  = '{desc_esc}',
+            PrescriptiveAnalysis = '{pres_esc}',
+            PredictiveAnalysis   = '{pred_esc}',
+            UpdatedAt            = GETDATE()
+        WHERE Question = '{question_esc}'
+          AND Username = '{user_esc}'
+          AND CreatedAt = (
+              SELECT MAX(CreatedAt)
+              FROM [{WH}].[{Config.GENIE_CONTEXT_MEMORY_TABLE}]
+              WHERE Question = '{question_esc}'
+                AND Username = '{user_esc}'
+          );
+        """
+
+        run_warehouse_non_query(sql)
+        logger.info("[Middleware] Analysis insights updated for question: %s", question[:60])
+
+    except Exception as e:
+        logger.warning(f"[Middleware] update_analysis_insights failed: {e}")
 
 
 def get_existing_question_frequency(question: str, user: str) -> int:
@@ -179,6 +240,9 @@ def log_events_upsert(event_type: str, payload: dict):
         filters = _sql_escape(payload.get("filters", ""))
         details = _sql_escape(payload.get("details", ""))
         cache_key = _sql_escape(payload.get("cache_key", ""))
+        descriptive = _sql_escape(payload.get("descriptive_analysis", ""))
+        prescriptive = _sql_escape(payload.get("prescriptive_analysis", ""))
+        predictive = _sql_escape(payload.get("predictive_analysis", ""))
 
         relevance = payload.get("relevance", 0.0)
 
@@ -205,6 +269,9 @@ def log_events_upsert(event_type: str, payload: dict):
                 UpdatedAt = GETDATE(),
                 AnswerSummary = '{summary}',
                 FullAnswer = '{full}',
+                DescriptiveAnalysis  = '{descriptive}',
+                PrescriptiveAnalysis = '{prescriptive}',
+                PredictiveAnalysis   = '{predictive}',
                 Sql_Query = '{sql_query}',
                 Tables_Used = '{tables}',
                 Filters_Applied = '{filters}',
@@ -217,16 +284,18 @@ def log_events_upsert(event_type: str, payload: dict):
         WHEN NOT MATCHED THEN
             INSERT (
                 SessionId, Username, user_id, Question,
-                AnswerSummary, FullAnswer, Context_Hash,
-                Sql_Query, Tables_Used, Filters_Applied,
+                AnswerSummary, FullAnswer,
+                DescriptiveAnalysis, PrescriptiveAnalysis, PredictiveAnalysis,
+                Context_Hash, Sql_Query, Tables_Used, Filters_Applied,
                 Relevance_Score, Usage_Count, Last_Accessed_At,
                 CacheKey, Frequency, Action_Type, Action_Details,
                 ChatDate, CreatedAt, UpdatedAt
             )
             VALUES (
                 '{session_id}', '{user_esc}', '{user_esc}', '{question_esc}',
-                '{summary}', '{full}', '{context_hash}',
-                '{sql_query}', '{tables}', '{filters}',
+                '{summary}', '{full}',
+                '{descriptive}', '{prescriptive}', '{predictive}',
+                '{context_hash}', '{sql_query}', '{tables}', '{filters}',
                 {relevance}, 1, GETDATE(),
                 '{cache_key}', 1, '{event_type}', '{details}',
                 CAST(GETDATE() AS DATE), GETDATE(), GETDATE()
