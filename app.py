@@ -188,7 +188,15 @@ st.set_page_config(
 # container warmup probe succeeds before any slow DB connection can time it out.
 session = get_active_session()
 
-if "startup_db_check_done" not in st.session_state:
+
+def _run_startup_db_checks() -> None:
+    """
+    One-time DB probe and warehouse setup.
+    Runs after Streamlit session wiring (not at import) to avoid Azure Web App
+    websocket/session race errors on cold start.
+    """
+    if st.session_state.get("startup_db_check_done"):
+        return
     st.session_state["startup_db_check_done"] = True
     _initialize_genie_session()
     try:
@@ -259,6 +267,7 @@ Check `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET` in your `.
             )
         with st.expander("Full error details"):
             st.code(err_str)
+
 
 # ---------- Your Fabric assets ----------
 # Fabric SQL Configuration (replacing Fabric)
@@ -829,6 +838,35 @@ def _load_user_chat_dates() -> list:
     except Exception as e:
         st.warning(f"Could not load query history: {e}")
         return []
+
+
+def _format_chat_relative_time(item: dict) -> str:
+    """Relative timestamp for a recent-conversation card (e.g. '5h ago')."""
+    try:
+        chat_date = item.get("ChatDate", "")
+        last_msg = item.get("last_message_at", "")
+        if last_msg and str(last_msg) not in ("", "None", "nan"):
+            try:
+                chat_dt = datetime.fromisoformat(str(last_msg).strip())
+            except ValueError:
+                chat_dt = datetime.strptime(str(last_msg).strip()[:19], "%Y-%m-%d %H:%M:%S")
+        else:
+            chat_dt = datetime.strptime(str(chat_date).strip()[:10], "%Y-%m-%d")
+        diff_minutes = int((datetime.now() - chat_dt).total_seconds() // 60)
+        diff_hours = diff_minutes // 60
+        if diff_minutes < 1:
+            return "just now"
+        if diff_minutes < 60:
+            return f"{diff_minutes}m ago"
+        if diff_hours < 24:
+            return f"{diff_hours}h ago"
+        if diff_hours < 48:
+            return "1 day ago"
+        diff_days = diff_hours // 24
+        return f"{diff_days} days ago"
+    except Exception:
+        return ""
+
 
 def generate_context_summary(
     question: str,
@@ -2200,6 +2238,128 @@ def load_clean_ui_light():
     .st-key-btn_download_csv button:hover {
     background-color: #1D4ED8 !important;
     }
+    /* Genie — recent conversation cards */
+    .genie-assistant-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 14px;
+      margin-bottom: 4px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .genie-assistant-header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .genie-assistant-text {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: 40px;
+      padding-top: 3px;
+    }
+    .genie-assistant-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      font-size: 18px;
+      line-height: 1;
+    }
+    .genie-assistant-title {
+      font-size: 20px;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.2;
+      margin: 0;
+    }
+    .genie-assistant-subtitle {
+      font-size: 13px;
+      color: #64748b;
+      margin: 0;
+      line-height: 1.4;
+    }
+    .genie-recent-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: #94a3b8;
+      text-transform: uppercase;
+      margin: 8px 0 10px 0;
+    }
+    div[data-testid="stVerticalBlock"]:has(.genie-conv-card-marker) {
+      gap: 0.35rem !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(.genie-conv-card-marker) [data-testid="stVerticalBlockBorderWrapper"] {
+      border-radius: 10px !important;
+      border-color: #e5e7eb !important;
+      background: #ffffff !important;
+      margin-bottom: 2px !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(.genie-conv-card-marker) [data-testid="stVerticalBlockBorderWrapper"]:hover {
+      border-color: #cbd5e1 !important;
+      background: #f8fafc !important;
+    }
+    .genie-conv-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: #f1f5f9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #94a3b8;
+      font-size: 15px;
+    }
+    .genie-conv-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #0f172a;
+      line-height: 1.35;
+      margin: 0;
+      word-break: break-word;
+    }
+    .genie-conv-time {
+      font-size: 12px;
+      color: #94a3b8;
+      margin: 3px 0 0 0;
+      line-height: 1.3;
+    }
+    .genie-conv-chevron {
+      font-size: 20px;
+      color: #cbd5e1;
+      font-weight: 300;
+      line-height: 1;
+      padding-top: 6px;
+      text-align: right;
+    }
+    div[class*="st-key-chat_card_"] {
+      margin-top: -62px !important;
+      margin-bottom: 8px !important;
+      position: relative;
+      z-index: 2;
+    }
+    div[class*="st-key-chat_card_"] button {
+      background: transparent !important;
+      border: none !important;
+      box-shadow: none !important;
+      color: transparent !important;
+      min-height: 58px !important;
+      padding: 0 !important;
+      cursor: pointer !important;
+    }
+    div[class*="st-key-chat_card_"] button:hover {
+      background: rgba(248, 250, 252, 0.65) !important;
+      border-radius: 10px !important;
+    }
+
     /* Genie chat history resume buttons - screenshot style */
     div[class*="st-key-resume_query_"] button {
       background: #2563EB !important;
@@ -4056,15 +4216,17 @@ load_clean_ui_light()
 if 'page' not in st.session_state:
     st.session_state.page = 'dashboard'
 
-# Handle query parameters for navigation
+# Sync URL ?page= without st.rerun() — immediate rerun on cold start triggers
+# Streamlit "SessionInfo before it was initialized" on Azure (fixed in 1.45.1+).
 params = st.query_params
 if 'page' in params:
     new_page = params.get('page')
     if isinstance(new_page, list):
         new_page = new_page[0]
-    if new_page != st.session_state.page:
+    if new_page and new_page != st.session_state.page:
         st.session_state.page = new_page
-        st.rerun()
+
+_run_startup_db_checks()
 
 # Persist dashboard filters: restore from query params when present (so they survive page navigation)
 if 'preset' not in st.session_state:
@@ -5433,33 +5595,20 @@ if st.session_state.get('page') == 'genie':
     with right_col:
         with st.container(border=True):
 
-            # Header row with title and buttons - Claude/Copilot style
-            st.markdown("""
-            <style>
-            .genie-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 12px 0;
-                margin-bottom: 12px;
-                border-bottom: 1px solid #e2e8f0;
-            }
-            .genie-title {
-                font-size: 22px;
-                font-weight: 800;
-                color: #0F172A;
-            }
-            .genie-button-group {
-                display: flex;
-                gap: 8px;
-            }
-            </style>
-            <div class="genie-header">
-                <div class="genie-title">AI Assistant</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            header_col, btn2, btn3, btn4 = st.columns([2, 1, 1, 1], gap="small")
+            # Header row with title, subtitle, and action buttons
+            header_col, btn2, btn3, btn4 = st.columns([2.2, 1, 1, 1], gap="small")
+            with header_col:
+                st.markdown("""
+                <div class="genie-assistant-header">
+                    <div class="genie-assistant-header-left">
+                        <div class="genie-assistant-icon">✦</div>
+                        <div class="genie-assistant-text">
+                            <div class="genie-assistant-title">AI Assistant</div>
+                            <!-- <p class="genie-assistant-subtitle">Ask questions about your procurement data.</p> -->
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             
             with btn2:
                 if st.button("Summarize", use_container_width=True, key="btn_summarize"):
@@ -5622,79 +5771,53 @@ if st.session_state.get('page') == 'genie':
 
                 # Show conversation history or empty state
                 if st.session_state.get("show_conversation_history", True):
-                    # Returns list of {"query": ..., "count": ...}
-                    ChatDate = _load_user_chat_dates()
+                    chat_dates = _load_user_chat_dates()
 
-                    if not ChatDate:
+                    if not chat_dates:
                         st.info("No query history found for your account.")
                     else:
-                        # Render each query as a card
-                        for i, item in enumerate(ChatDate[:]):  # Show up to 6 cards
+                        st.markdown(
+                            '<div class="genie-recent-label">Recent conversations</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            '<span class="genie-conv-card-marker" style="display:none;"></span>',
+                            unsafe_allow_html=True,
+                        )
+                        for i, item in enumerate(chat_dates[:10]):
                             chat_date = item["ChatDate"]
-                            freq = item.get("count", 0)
-
-                            # Calculate how long ago this chat was
-                            # Prefer real timestamp (last_message_at) for accuracy;
-                            # fall back to ChatDate (midnight) if not available.
-                            try:
-                                _last_msg = item.get("last_message_at", "")
-                                if _last_msg and str(_last_msg) not in ("", "None", "nan"):
-                                    try:
-                                        _chat_dt = datetime.fromisoformat(str(_last_msg).strip())
-                                    except ValueError:
-                                        _chat_dt = datetime.strptime(str(_last_msg).strip()[:19], "%Y-%m-%d %H:%M:%S")
-                                else:
-                                    # Fallback: use ChatDate at midnight (less precise)
-                                    _chat_dt = datetime.strptime(str(chat_date).strip()[:10], "%Y-%m-%d")
-                                _now = datetime.now()
-                                _diff_minutes = int((_now - _chat_dt).total_seconds() // 60)
-                                _diff_hours = _diff_minutes // 60
-                                if _diff_minutes < 1:
-                                    _time_ago = "just now"
-                                elif _diff_minutes < 60:
-                                    _time_ago = f"{_diff_minutes}m ago"
-                                elif _diff_hours < 24:
-                                    _time_ago = f"{_diff_hours}h ago"
-                                elif _diff_hours < 48:
-                                    _time_ago = "1 day ago"
-                                else:
-                                    _diff_days = _diff_hours // 24
-                                    _time_ago = f"{_diff_days} days ago"
-                            except Exception:
-                                _time_ago = ""
-
-                            # Native Streamlit card - no raw HTML to avoid escaping issues
-                            _is_active = (
-                                st.session_state.get("show_loaded_chat_history", False)
-                                and st.session_state.get("loaded_chat_date") == chat_date
-                            )
-                            _msg_label = ""
-                            _question = item.get("question", "  ")
-                            _display_title = f"{_question}\u00a0\u00a0\u00a0 \u00a0\u00a0\u00a0{_time_ago}" if _question else f"Chat on {chat_date}"
-                            
-                            # Full-width clickable card (no Resume button)
-                            _border_style = (
-                                "border:2px solid #16a34a;border-radius:10px;padding:12px 16px;background:#f0fdf4;cursor:pointer;"
-                                if _is_active else
-                                "border:1px solid #E5E7EB;border-radius:10px;padding:12px 16px;background:#FFFFFF;cursor:pointer;"
-                            )
-                            if _is_active:
-                                _active_badge = '<span style="background:#16a34a;color:#fff;border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700;margin-left:8px;">Active</span>'
-                                card_html = (
-                                    f'<div style="{_border_style}">'
-                                    f'<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">{_display_title}{_active_badge}</div>'
-                                    f'<div style="font-size:12px;color:#6B7280;">{_msg_label}</div>'
-                                    f'</div>'
-                                )
+                            time_ago = _format_chat_relative_time(item)
+                            question = (item.get("question") or "").strip()
+                            if question:
+                                title = (question[:72] + "…") if len(question) > 72 else question
                             else:
-                                card_html = (
-                                    f'<div style="{_border_style}">'
-                                    f'<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">{_display_title}</div>'
-                                    f'<div style="font-size:12px;color:#6B7280;">{_msg_label}</div>'
-                                    f'</div>'
-                                )
-                            
-                            if st.button(f"{_display_title}\n{_msg_label}", use_container_width=True, key=f"chat_card_{i}"):
+                                title = f"Chat on {chat_date}"
+                            title_safe = html.escape(title)
+                            time_safe = html.escape(time_ago) if time_ago else ""
+
+                            with st.container(border=True):
+                                col_icon, col_body, col_go = st.columns([0.12, 0.8, 0.08], gap="small")
+                                with col_icon:
+                                    st.markdown(
+                                        '<div class="genie-conv-icon">💬</div>',
+                                        unsafe_allow_html=True,
+                                    )
+                                with col_body:
+                                    st.markdown(
+                                        f'<p class="genie-conv-title">{title_safe}</p>'
+                                        + (
+                                            f'<p class="genie-conv-time">{time_safe}</p>'
+                                            if time_safe
+                                            else ""
+                                        ),
+                                        unsafe_allow_html=True,
+                                    )
+                                with col_go:
+                                    st.markdown(
+                                        '<div class="genie-conv-chevron">›</div>',
+                                        unsafe_allow_html=True,
+                                    )
+                            if st.button(" ", key=f"chat_card_{i}", use_container_width=True):
                                 with st.spinner("Loading chat history..."):
                                     chat_queries = _load_queries_by_date(chat_date)
                                     if chat_queries:
@@ -5704,7 +5827,6 @@ if st.session_state.get('page') == 'genie':
                                     else:
                                         st.warning(f"No chat history found for {chat_date}")
                                 st.rerun()
-                            st.write("")
                 else:
                     # Empty state - Start a Conversation
                     st.markdown(
