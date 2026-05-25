@@ -4291,8 +4291,15 @@ if st.session_state.page == 'dashboard':
     col_date, col_vendor, col_presets = st.columns([1, 1, 1.8], gap="small")
 
     with col_date:
-        if st.session_state.preset != "Custom":
-            rng_start, rng_end = compute_range_preset(st.session_state.preset)
+        # Ensure preset is initialized from saved state
+        if 'preset' not in st.session_state:
+            st.session_state.preset = st.session_state.get("_dash_preset_saved", "Last 30 Days")
+        
+        current_preset = st.session_state.get('preset', 'Last 30 Days')
+        
+        # Compute date range based on current preset
+        if current_preset != "Custom":
+            rng_start, rng_end = compute_range_preset(current_preset)
             default_range = (rng_start, rng_end)
         else:
             default_range = st.session_state.get(
@@ -4327,11 +4334,12 @@ if st.session_state.page == 'dashboard':
 
         st.session_state.date_range = (rng_start, rng_end)
 
-        if st.session_state.preset != "Custom" and (
-            rng_start != compute_range_preset(st.session_state.preset)[0] or
-            rng_end != compute_range_preset(st.session_state.preset)[1]
-        ):
-            st.session_state.preset = "Custom"
+        # Final check: if preset changed, ensure dates match the preset
+        if st.session_state.preset != "Custom":
+            preset_start, preset_end = compute_range_preset(st.session_state.preset)
+            if (rng_start, rng_end) != (preset_start, preset_end):
+                rng_start, rng_end = preset_start, preset_end
+                st.session_state.date_range = (rng_start, rng_end)
 
     start_lit_tmp, end_lit_tmp = sql_date(rng_start), sql_date(rng_end)
 
@@ -4371,20 +4379,34 @@ if st.session_state.page == 'dashboard':
     st.session_state._dash_preset_saved = st.session_state.get("preset", "Last 30 Days")
 
     with col_presets:
+        # Restore preset from persistent saved state if not already set
+        if 'preset' not in st.session_state:
+            st.session_state.preset = st.session_state.get("_dash_preset_saved", "Last 30 Days")
+        
         preset = st.session_state.get('preset', 'Last 30 Days')
         presets = ["Last 30 Days", "QTD", "YTD", "Custom"]
+        
         p_cols = st.columns(4, gap="small")
-        for idx, p in enumerate(presets):
-            with p_cols[idx]:
+        for p in presets:
+            with p_cols[presets.index(p)]:
+                # Use a stable key based on preset name only
+                button_key = f"preset_btn_{p.replace(' ', '_').lower()}"
+                is_active = (p == preset)
+                
                 if st.button(
                     p,
-                    key=f"preset_{idx}_{p.replace(' ', '_')}",
+                    key=button_key,
                     use_container_width=True,
-                    type="primary" if p == preset else "secondary"
+                    type="primary" if is_active else "secondary"
                 ):
+                    # Update session state directly and compute new date range immediately
                     st.session_state.preset = p
                     st.session_state._dash_preset_saved = p
-                    st.query_params.from_dict({"page": "dashboard"})
+                    # If not custom, compute and update date range immediately
+                    if p != "Custom":
+                        new_start, new_end = compute_range_preset(p)
+                        st.session_state.date_range = (new_start, new_end)
+                    # Force immediate rerun with updated state
                     st.rerun()
 
     # Prepare SQL literals and filters
@@ -5575,7 +5597,7 @@ if st.session_state.get('page') == 'genie':
             
             # New Chat Button - Claude/Copilot style
             st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
-            if st.button("+ New Chat", use_container_width=True, key="btn_new_chat", help="Start a fresh conversation"):
+            if st.button(" New Chat", use_container_width=True, key="btn_new_chat", help="Start a fresh conversation"):
                 st.session_state.show_analysis = False
                 st.session_state.analyst_response = None
                 st.session_state.show_conversation_history = False
