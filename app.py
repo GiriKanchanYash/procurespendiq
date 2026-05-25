@@ -4212,19 +4212,25 @@ SELECT
 
 load_clean_ui_light()
 
-# Ensure session state initialization forGenie
-if 'page' not in st.session_state:
-    st.session_state.page = 'dashboard'
+# Ensure session state initialization for Genie
+try:
+    if 'page' not in st.session_state:
+        st.session_state.page = 'dashboard'
+except Exception as _e:
+    logger.debug(f"Session state initialization skipped during startup: {_e}")
 
 # Sync URL ?page= without st.rerun() — immediate rerun on cold start triggers
 # Streamlit "SessionInfo before it was initialized" on Azure (fixed in 1.45.1+).
-params = st.query_params
-if 'page' in params:
-    new_page = params.get('page')
-    if isinstance(new_page, list):
-        new_page = new_page[0]
-    if new_page and new_page != st.session_state.page:
-        st.session_state.page = new_page
+try:
+    params = st.query_params
+    if 'page' in params:
+        new_page = params.get('page')
+        if isinstance(new_page, list):
+            new_page = new_page[0]
+        if new_page and new_page != st.session_state.page:
+            st.session_state.page = new_page
+except Exception as _e:
+    logger.debug(f"Query params sync skipped during initialization: {_e}")
 
 _run_startup_db_checks()
 

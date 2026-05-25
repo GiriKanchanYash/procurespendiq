@@ -1,0 +1,29 @@
+[client]
+showErrorDetails = true
+toolbarMode = "minimal"
+gatherUsageStats = false
+
+[logger]
+level = "warning"
+
+[server]
+port = 8501
+enableXsrfProtection = true
+enableCORS = true
+headless = true
+runOnSave = false
+maxUploadSize = 200
+address = "0.0.0.0"
+maxRequestSize = 50
+
+[theme]
+primaryColor = "#1459d2"
+backgroundColor = "#f7f8fb"
+secondaryBackgroundColor = "#fafafa"
+textColor = "#0f172a"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
+serverAddress = "localhost"
+
