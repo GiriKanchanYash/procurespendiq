@@ -1,7 +1,6 @@
 [client]
 showErrorDetails = true
 toolbarMode = "minimal"
-gatherUsageStats = false
 
 [logger]
 level = "warning"
@@ -14,7 +13,6 @@ headless = true
 runOnSave = false
 maxUploadSize = 200
 address = "0.0.0.0"
-maxRequestSize = 50
 
 [theme]
 primaryColor = "#1459d2"
@@ -24,6 +22,6 @@ textColor = "#0f172a"
 font = "sans serif"
 
 [browser]
-gatherUsageStats = false
 serverAddress = "localhost"
+
 
