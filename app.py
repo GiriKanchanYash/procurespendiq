@@ -438,20 +438,24 @@ def _resolve_user_identity() -> str:
         return "" if s in ("None", "nan", "null", "<NA>", "") else s
 
     # ── 2. Fabric SQL CURRENT_USER() ─────────────────────────────────────────
-    try:
-        df = session.sql("""
-            SELECT COALESCE(
-                TRIM(CURRENT_USER()),
-                TRIM(SYS_CONTEXT('Fabric$SESSION', 'PRINCIPAL_NAME')),
-                ''
-            ) AS SF_USER
-        """).to_pandas()
-        if not df.empty and "SF_USER" in df.columns:
-            val = _clean(df.at[0, "SF_USER"])
-            if val:
-                return _cache(val)
-    except Exception:
-        pass
+    # INTENTIONALLY COMMENTED OUT: These functions (CURRENT_USER, SYS_CONTEXT) are
+    # Snowflake/Fabric-specific and cause SQL Server ODBC syntax errors. Keeping this
+    # commented ensures graceful fallback to Azure Easy Auth headers (method 3).
+    # System continues to work fine with fallback methods, so no fix is needed.
+    # try:
+    #     df = session.sql("""
+    #         SELECT COALESCE(
+    #             TRIM(CURRENT_USER()),
+    #             TRIM(SYS_CONTEXT('Fabric$SESSION', 'PRINCIPAL_NAME')),
+    #             ''
+    #         ) AS SF_USER
+    #     """).to_pandas()
+    #     if not df.empty and "SF_USER" in df.columns:
+    #         val = _clean(df.at[0, "SF_USER"])
+    #         if val:
+    #             return _cache(val)
+    # except Exception:
+    #     pass
 
     # ── 3. Azure App Service Easy Auth header ────────────────────────────────
     # Azure injects X-MS-CLIENT-PRINCIPAL-NAME when App Service Authentication
