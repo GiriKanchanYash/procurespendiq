@@ -3180,19 +3180,19 @@ ORDER BY [YEAR] DESC, [MONTH] DESC;
 
         grir_tasks = [
             {
-                "label": "1. Identify top GR/IR hotspots to clear first",
+                "label": "Identify top GR/IR hotspots to clear first",
                 "question": "Show GR/IR outstanding balance by month and highlight which recent months have the highest GR/IR balance so we can prioritize clearing.",
             },
             {
-                "label": "2. Explain likely GR/IR root causes",
+                "label": "Explain likely GR/IR root causes",
                 "question": "Using GR/IR aging and outstanding balance data, explain the likely root-cause buckets (missing goods receipt, invoice not posted, price or quantity mismatch) and for each bucket suggest 2–3 concrete remediation actions.",
             },
             {
-                "label": "3. Quantify working-capital benefit from clearing old GR/IR",
+                "label": "Quantify working-capital benefit from clearing old GR/IR",
                 "question": "Estimate the working capital that would be released by clearing all GR/IR items older than 60 and 90 days, by month.",
             },
             {
-                "label": "4. Draft vendor follow-up messages for top GR/IR items",
+                "label": "Draft vendor follow-up messages for top GR/IR items",
                 "question": "Based on GR/IR aging and outstanding balances, draft vendor-facing follow-up templates we can use for high-priority GR/IR items, with realistic subject lines and concise bullet points.",
             },
         ]
