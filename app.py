@@ -5708,52 +5708,55 @@ if st.session_state.get('page') == 'genie':
                         st.info("No questions found for today's session to summarize.")
             with btn3:
                 # Build AI-summarised MD; cache in session_state so it only regenerates once
-                if "export_md_content" not in st.session_state:
-                    chat_dates = _load_user_chat_dates()
-                    if chat_dates:
-                        md_lines = ["# Chat History — AI Summary\n"]
-                        for item in chat_dates:
-                            chat_date_text = item.get("ChatDate", "")
-                            freq = item.get("count", 0)
-                            md_lines.append(f"## {chat_date_text}  _(asked {freq} time{'s' if freq != 1 else ''})_\n")
-                            queries = _load_queries_by_date(chat_date_text)
-                            if queries:
-                                for idx, q in enumerate(queries, 1):
-                                    question = q.get("question", "").strip()
-                                    full_answer = q.get("full_answer", "").strip()
-                                    sql = q.get("sql", "").strip()
-                                    summary = q.get("summary", "").strip()
-                                    descriptive = q.get("descriptive", "").strip()
-                                    predictive = q.get("predictive", "").strip()
-                                    prescriptive = q.get("prescriptive", "").strip()
+                if st.session_state.get("show_loaded_chat_history", False):
+                    chat_date = st.session_state.get("loaded_chat_date", "")
+                    export_content = build_chat_markdown_for_date(chat_date)
+                    
+                    export_filename = (f"chat_history_{chat_date.replace('-', '')}.md" if chat_date else "chat_history.md")
+                else:
+                    if "export_md_content" not in st.session_state:
+                        chat_dates = _load_user_chat_dates()
+                        if chat_dates:
+                            md_lines = ["# Chat History — AI Summary\n"]
+                            for item in chat_dates:
+                                chat_date_text = item.get("ChatDate", "")
+                                freq = item.get("count", 0)
+                                md_lines.append(f"## {chat_date_text}  _(asked {freq} time{'s' if freq != 1 else ''})_\n")
+                                queries = _load_queries_by_date(chat_date_text)
+                                if queries:
+                                    for idx, q in enumerate(queries, 1):
+                                        question = q.get("question", "").strip()
+                                        full_answer = q.get("full_answer", "").strip()
+                                        sql = q.get("sql", "").strip()
+                                        summary = q.get("summary", "").strip()
+                                        descriptive = q.get("descriptive", "").strip()
+                                        predictive = q.get("predictive", "").strip()
+                                        prescriptive = q.get("prescriptive", "").strip()
 
-                                    # Use stored summary if available, otherwise generate via AI
-                                    if not summary and (question or full_answer):
-                                        summary = generate_context_summary(question, full_answer, sql)
-                                    md_lines.append(f"### Q{idx}: {question}\n")
-                                    md_lines.append(f"{summary if summary else '_No summary available._'}\n")
-                            else:
-                                md_lines.append("_No query details found for this date._\n")
-                        st.session_state.export_md_content = "\n".join(md_lines)
+                                        # Use stored summary if available, otherwise generate via AI
+                                        if not summary and (question or full_answer):
+                                            summary = generate_context_summary(question, full_answer, sql)
+                                        md_lines.append(f"### Q{idx}: {question}\n")
+                                        md_lines.append(f"{summary if summary else '_No summary available._'}\n")
+                                    md_lines.append("_No query details found for this date._\n")
+                            st.session_state.export_md_content = "\n".join(md_lines)
                     else:
                         st.session_state.export_md_content = None
-
-                if st.session_state.get("export_md_content"):
+                    export_content = st.session_state.get("export_md_content", "")
+                    export_filename = f"Chat_detail_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+                if export_content:
                     st.download_button(
-                        label="Export 7 Days Chat History",
-                        data=st.session_state.export_md_content,
-                        file_name="chat_history.md",
+                        label="Download Chat",
+                        data=export_content,
+                        file_name=export_filename,
                         mime="text/markdown",
-                        use_container_width=True,
-                        key="btn_export"
+                        key="download_chat_history"
                     )
                 else:
-                    if st.button("Export MD", use_container_width=True, key="btn_export_empty"):
-                        st.info("No chat history to export.")
-
+                    if st.button("Download Chat", use_container_width=True, key="btn_export_md"):
+                        st.info("No content available to export.")
+                    
             
-
-
             with btn4:
                 if st.button("Clear", use_container_width=True, key="btn_clear"):
                     st.session_state.show_analysis = False
@@ -5786,27 +5789,19 @@ if st.session_state.get('page') == 'genie':
                 if chat_history:
                     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
                     # Header with back button
-                    col_back, col_title, col_download = st.columns([1, 4, 1])
+                    col_back, col_title, col_spacer = st.columns([1, 4, 1])
                     with col_back:
                         if st.button("← Back", key="back_from_chat_history"):
                             st.session_state["show_loaded_chat_history"] = False
                             st.session_state["loaded_chat_history"] = []
                             st.session_state["loaded_chat_date"] = ""
+                            st.session_state.pop("export_md_content", None)  # Clear cached export content to regenerate for new chat when user clicks back
                             st.rerun()
                     with col_title:
                         st.markdown(f"""
                         <div style="font-size:18px;font-weight:800;color:#0F172A;">Chat History - {chat_date}</div>
                         """, unsafe_allow_html=True)
-                    with col_download:
-                        chat_md = build_chat_markdown_for_date(chat_date)
-                        st.download_button(
-                            label=f"Download {chat_date} Chat",
-                            data=chat_md,
-                            file_name=f"chat_history_{chat_date}.md",
-                            mime="text/markdown",
-                            use_container_width=True,
-                            key="download_chat_md"
-                        )
+                        
                     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 
                     # Build full chat bubble HTML in one block
@@ -5904,6 +5899,7 @@ if st.session_state.get('page') == 'genie':
                                         st.session_state["loaded_chat_date"] = chat_date
                                         st.session_state["loaded_chat_history"] = chat_queries
                                         st.session_state["show_loaded_chat_history"] = True
+                                        st.session_state.pop("export_md_content", None)  # Clear cached export content to regenerate for this chat  
                                     else:
                                         st.warning(f"No chat history found for {chat_date}")
                                 st.rerun()
