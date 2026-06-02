@@ -933,7 +933,10 @@ def _load_queries_by_date(chat_date: str) -> list:
                 [Sql_Query],
                 [Action_Type],
                 [Action_Details],
-                [ChatDate]
+                [ChatDate],
+                [DescriptiveAnalysis],
+                [PredictiveAnalysis],
+                [PrescriptiveAnalysis]
             FROM {WH_TBL}
             WHERE UPPER(Username) = UPPER('{current_user}') AND [ChatDate] = '{chat_date}' AND [Action_Type] IN ('GENIE_QUERY');
         """
@@ -950,7 +953,10 @@ def _load_queries_by_date(chat_date: str) -> list:
                 "full_answer": (str(row.get("FullAnswer") or "")).strip(),
                 "sql": (str(row.get("Sql_Query") or "")).strip(),
                 "action_type": (str(row.get("Action_Type") or "")).strip(),
-                "action_details": (str(row.get("Action_Details") or "")).strip()
+                "action_details": (str(row.get("Action_Details") or "")).strip(),
+                "descriptive": (str(row.get("DescriptiveAnalysis") or "")).strip(),
+                "predictive": (str(row.get("PredictiveAnalysis") or "")).strip(),
+                "prescriptive": (str(row.get("PrescriptiveAnalysis") or "")).strip(),
             }
             for _, row in df.iterrows()
         ]
@@ -965,6 +971,35 @@ def _load_queries_by_date(chat_date: str) -> list:
         return date(today.year, 1, 1), today
     return today.replace(day=1), today  # Current month
 
+def build_chat_markdown_for_date(chat_date):
+    """Builds markdown for all queries on a specific date."""
+    items = _load_queries_by_date(chat_date)
+    if not items:
+        return "No queries found for this date."
+
+    md = f"## Queries for {chat_date}\n\n"
+    for item in items:
+        q = item.get("question", "")
+        s = item.get("summary", "")
+        sql = item.get("sql", "")
+        full_a = item.get("full_answer", "")
+        descriptive = item.get("descriptive", "")
+        predictive = item.get("predictive", "")
+        prescriptive = item.get("prescriptive", "")
+
+        md += f"### Question:\n{q}\n\n"
+        md += f"**Summary:** {s}\n\n"
+        md += f"**SQL:**\n```sql\n{sql}\n```\n\n"
+        md += f"**Full Answer:**\n{full_a}\n\n"
+        if descriptive:
+            md += f"**Descriptive Analysis:**\n{descriptive}\n\n"
+        if predictive:
+            md += f"**Predictive Analysis:**\n{predictive}\n\n"
+        if prescriptive:
+            md += f"**Prescriptive Analysis:**\n{prescriptive}\n\n"
+        md += "---\n\n"
+
+    return md
 
 
 def sql_date(d: date) -> str:
@@ -5688,6 +5723,10 @@ if st.session_state.get('page') == 'genie':
                                     full_answer = q.get("full_answer", "").strip()
                                     sql = q.get("sql", "").strip()
                                     summary = q.get("summary", "").strip()
+                                    descriptive = q.get("descriptive", "").strip()
+                                    predictive = q.get("predictive", "").strip()
+                                    prescriptive = q.get("prescriptive", "").strip()
+
                                     # Use stored summary if available, otherwise generate via AI
                                     if not summary and (question or full_answer):
                                         summary = generate_context_summary(question, full_answer, sql)
@@ -5701,7 +5740,7 @@ if st.session_state.get('page') == 'genie':
 
                 if st.session_state.get("export_md_content"):
                     st.download_button(
-                        label="Export MD",
+                        label="Export 7 Days Chat History",
                         data=st.session_state.export_md_content,
                         file_name="chat_history.md",
                         mime="text/markdown",
@@ -5747,7 +5786,7 @@ if st.session_state.get('page') == 'genie':
                 if chat_history:
                     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
                     # Header with back button
-                    col_back, col_title, col_spacer = st.columns([1, 4, 1])
+                    col_back, col_title, col_download = st.columns([1, 4, 1])
                     with col_back:
                         if st.button("← Back", key="back_from_chat_history"):
                             st.session_state["show_loaded_chat_history"] = False
@@ -5758,7 +5797,16 @@ if st.session_state.get('page') == 'genie':
                         st.markdown(f"""
                         <div style="font-size:18px;font-weight:800;color:#0F172A;">Chat History - {chat_date}</div>
                         """, unsafe_allow_html=True)
-                    
+                    with col_download:
+                        chat_md = build_chat_markdown_for_date(chat_date)
+                        st.download_button(
+                            label=f"Download {chat_date} Chat",
+                            data=chat_md,
+                            file_name=f"chat_history_{chat_date}.md",
+                            mime="text/markdown",
+                            use_container_width=True,
+                            key="download_chat_md"
+                        )
                     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 
                     # Build full chat bubble HTML in one block
@@ -6340,9 +6388,23 @@ ORDER BY Sort_Order;
             # Chat Input at bottom - Claude/Copilot style
             st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
             
-            # Input form with better styling
+            # ✅ Init state
+            if "show_upload" not in st.session_state:
+                st.session_state.show_upload = False
+
+            # -------------------------
+            # FORM UI
+            # -------------------------
             with st.form("genie_question_form", clear_on_submit=False):
-                col_input, col_send = st.columns([0.92, 0.08], gap="small")
+                col_plus, col_input, col_send = st.columns([0.06, 0.86, 0.08], gap="small")
+
+                # ➕ Button (toggle upload panel)
+                with col_plus:
+                    plus_clicked = st.form_submit_button("➕",
+                                    help="Upload a previous chat or analysis"
+                                            )
+
+                # Input box
                 with col_input:
                     user_query = st.text_input(
                         "Ask a question",
@@ -6350,18 +6412,72 @@ ORDER BY Sort_Order;
                         label_visibility="collapsed",
                         key=f"genie_chat_input_{st.session_state.genie_input_version}"
                     )
+
+                # Send button
                 with col_send:
-                    send_clicked = st.form_submit_button("⏎", use_container_width=True, help="Press Enter or click to send")
-            
+                    send_clicked = st.form_submit_button(
+                        "➤",
+                        use_container_width=True,
+                        help="Press Enter or click to send"
+                    )
+
+            # ✅ Toggle upload panel
+            if plus_clicked:
+                st.session_state.show_upload = not st.session_state.show_upload
+
+
+            # -------------------------
+            # ✅ Upload Panel (ChatGPT style)
+            # -------------------------
+            if st.session_state.show_upload:
+                with st.container():
+                    uploaded_file = st.file_uploader(
+                        "Choose file to upload",
+                        type=["md"],
+                        key="chat_md_upload"
+                    )
+
+                    if uploaded_file is not None:
+                        md_content = uploaded_file.read().decode("utf-8")
+
+                        # ✅ Store raw content
+                        st.session_state.loaded_md_content = md_content
+
+                        # ✅ Optional: parse into chat history
+                        lines = md_content.split("\n")
+                        parsed_chat = []
+                        
+                        for line in lines:
+                            if line.startswith("User:"):
+                                parsed_chat.append({
+                                    "role": "user",
+                                    "content": line.replace("User:", "").strip()
+                                })
+                            elif line.startswith("Bot:"):
+                                parsed_chat.append({
+                                    "role": "assistant",
+                                    "content": line.replace("Bot:", "").strip()
+                                })
+
+                        if parsed_chat:
+                            st.session_state.loaded_chat_history = parsed_chat
+
+                        st.success("✅ Chat uploaded successfully!")
+
+
+            # -------------------------
+            # ✅ SEND LOGIC (Your existing)
+            # -------------------------
             if send_clicked and user_query:
                 st.session_state.selected_analysis = "custom"
                 st.session_state.last_custom_query = user_query.strip()
                 st.session_state.show_analysis = True
                 st.session_state.show_conversation_history = True
-                st.session_state.genie_input_version = st.session_state.genie_input_version + 1
+                st.session_state.genie_input_version += 1
+
                 with st.spinner("Analyzing..."):
-                    # Cache-first lookup (req 8): check session cache before calling AI
                     _cached = cache_get(user_query.strip())
+
                     if _cached and _cached.get("result_json"):
                         import json as _json
                         try:
@@ -6376,15 +6492,17 @@ ORDER BY Sort_Order;
                             st.session_state.analyst_response = process_genie_query(user_query)
                     else:
                         st.session_state.analyst_response = process_genie_query(user_query)
-                # If the user is currently viewing a loaded chat history,
-                # append the new Q&A directly into that bubble view so it stays visible
+
+                # ✅ Append to loaded chat (if active)
                 if st.session_state.get("show_loaded_chat_history", False):
                     _new_summary = st.session_state.pop("_last_genie_summary", "") or user_query.strip()
                     _new_sql = st.session_state.pop("_last_genie_sql", "")
+
                     st.session_state["loaded_chat_history"].append({
                         "question": user_query.strip(),
                         "summary": _new_summary,
                         "full_answer": _new_summary,
                         "sql": _new_sql,
                     })
+
                 st.rerun()
