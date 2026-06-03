@@ -5759,6 +5759,8 @@ if st.session_state.get('page') == 'genie':
 
             st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
 
+
+
             # Session summary panel - full width, shown below the button row
             if st.session_state.get("show_session_summary") and st.session_state.get("session_summary_text"):
                 import re as _re_sum
@@ -6455,17 +6457,53 @@ ORDER BY Sort_Order;
                         converstaion_context = generate_context_for_uploaded_file(md_content)
                         st.session_state.upload_chat_context = converstaion_context
                         st.session_state.conversation_resumed = True
-                        st.success("✅ Chat uploaded successfully!")
+                        st.success("✅ Chat uploaded successfully! Context generated below.")
                         print(f"Generated conversation context: {converstaion_context}")
-                        
-                        if st.session_state.get("upload_chat_context"):
-                            st.markdown(f"""
-                            <div style='padding:14px;background:#e0f2fe;border-radius:10px;border-left:4px solid #0284c7;margin-top:16px;'>
-                                <div style='font-size:12px;font-weight:800;color:#0369a1;margin-bottom:8px;'>Conversation context from uploaded chat</div>
-                                <div style='color:#0f172a;font-size:14px;line-height:1.6;word-wrap:break-word;overflow-wrap:break-word;max-width:100%;'>{st.session_state.upload_chat_context}</div>
+
+                    # ── Show context card + action buttons inline (always visible while panel is open) ──
+                    if st.session_state.get("upload_chat_context"):
+                        _ctx = st.session_state.upload_chat_context
+                        st.markdown(f"""
+                        <div style='padding:16px;background:#e0f2fe;border-radius:12px;
+                                    border-left:4px solid #0284c7;margin-top:12px;margin-bottom:4px;'>
+                            <div style='font-size:13px;font-weight:800;color:#0369a1;margin-bottom:8px;'>
+                                📋 Conversation Context Loaded
                             </div>
-                            """, unsafe_allow_html=True)
-                            
+                            <div style='color:#0f172a;font-size:13px;line-height:1.6;
+                                        word-wrap:break-word;overflow-wrap:break-word;max-width:100%;'>
+                                {_ctx}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        # FIX 2 — Resume Chat: show active-banner + close panel so user can type
+                        _col_res, _col_clr = st.columns(2, gap="small")
+                        with _col_res:
+                            if st.button("🔄 Resume Chat", use_container_width=True, key="btn_resume_context"):
+                                st.session_state.use_uploaded_context = True
+                                st.session_state.show_upload = False          # close panel
+                                st.session_state.context_active_banner = True  # show inline banner
+                                st.rerun()
+                        with _col_clr:
+                            if st.button("✕ Clear Context", use_container_width=True, key="btn_clear_context"):
+                                st.session_state.upload_chat_context = None
+                                st.session_state.loaded_md_content = None
+                                st.session_state.show_upload = False
+                                st.session_state.context_active_banner = False
+                                st.rerun()
+
+            # ── Context-active banner: shown BELOW input when Resume Chat was clicked ──
+            if st.session_state.get("context_active_banner") and st.session_state.get("use_uploaded_context"):
+                st.markdown("""
+                <div style='display:flex;align-items:center;gap:10px;padding:10px 16px;
+                            background:#f0fdf4;border-radius:10px;border:1px solid #86efac;
+                            margin-bottom:8px;'>
+                    <span style='font-size:16px;'>✅</span>
+                    <span style='font-size:13px;color:#166534;font-weight:600;'>
+                        Context is active — your next question will include the uploaded conversation history.
+                    </span>
+                </div>
+                """, unsafe_allow_html=True)
 
             # -------------------------
             # ✅ SEND LOGIC (Your existing)
@@ -6476,6 +6514,14 @@ ORDER BY Sort_Order;
                 st.session_state.show_analysis = True
                 st.session_state.show_conversation_history = True
                 st.session_state.genie_input_version += 1
+                
+                # ✅ Prepend uploaded context if resuming chat
+                final_query = user_query.strip()
+                if st.session_state.get("use_uploaded_context") and st.session_state.get("upload_chat_context"):
+                    context = st.session_state.get("upload_chat_context", "").strip()
+                    final_query = f"Based on this conversation context:\n\n{context}\n\n{final_query}"
+                    st.session_state.use_uploaded_context = False  # Clear flag after use
+                    st.session_state.context_active_banner = False  # Hide banner after context is consumed
 
                 with st.spinner("Analyzing..."):
                     _cached = cache_get(user_query.strip())
@@ -6491,9 +6537,9 @@ ORDER BY Sort_Order;
                                 "question": user_query.strip(),
                             }
                         except Exception:
-                            st.session_state.analyst_response = process_genie_query(user_query)
+                            st.session_state.analyst_response = process_genie_query(final_query)
                     else:
-                        st.session_state.analyst_response = process_genie_query(user_query)
+                        st.session_state.analyst_response = process_genie_query(final_query)
 
                 # ✅ Append to loaded chat (if active)
                 if st.session_state.get("show_loaded_chat_history", False):
