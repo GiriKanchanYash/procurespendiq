@@ -123,32 +123,6 @@ def save_query_to_session_memory(question: str, sql: str, result_summary: str):
 #         st.session_state.genie_previous_sessions = st.session_state.genie_previous_sessions[-2:]
 #     logger.info(f"Session {st.session_state.genie_session_id} archived to long-term memory")
 
-
-def get_session_context_for_prompt() -> str:
-    """Build memory context string to inject into LLM prompts."""
-    _initialize_genie_session()
-    context = ""
-    if st.session_state.genie_previous_sessions:
-        context += "CONTEXT FROM YOUR PREVIOUS SESSIONS:\n"
-        for i, session in enumerate(st.session_state.genie_previous_sessions[-2:], 1):
-            context += f"\nSession {i}:\n"
-            context += f"  Queries: {session.get('query_count', 0)}\n"
-            topics = session.get('key_topics', [])
-            if topics:
-                context += f"  Topics: {', '.join(topics[:3])}\n"
-            queries = session.get('queries', [])
-            if queries:
-                context += f"  Key questions: {', '.join(queries[:2])}\n"
-        context += "\n---\n\n"
-    if st.session_state.genie_queries:
-        context += "YOUR RECENT QUESTIONS IN THIS SESSION:\n"
-        for q in st.session_state.genie_queries[-3:]:
-            context += f"- {q['question']}\n"
-        context += "\n---\n\n"
-    print(f"Initialized new Genie session: {st.session_state}")
-    return context
-
-
 def _extract_key_topics(queries: list) -> list:
     """Extract key topics from list of queries."""
     topics = set()
@@ -1131,8 +1105,27 @@ def _get_ai_invoice_suggestion(invoice_number: str, inv_row: dict, status_histor
             "There are no blocking issues — you can **proceed to pay** this invoice."
         )
 
-
-
+def generate_context_for_uploaded_file(file_content: str) -> str:
+    prompt = f"""
+                You are analysing a previously saved chat between a user and an AI assistant. The chat is about procurement data analysis.
+                The user has uploaded the chat for you to review and provide insights on. The chat content is as follows:
+                {md_content}
+                Please review the chat and create a consise conversation memory that contains:
+                1. Main topics discussed
+                2. Key insights or conclusions reached
+                3. Any action items or recommendations mentioned
+                4. Overall sentiment of the conversation
+                5. Any other relevant context that would help you understand the user's needs and preferences based on this past conversation.
+                
+                Return a structure summary.
+            """
+        
+    try:
+        response = cortex_complete(prompt, temperature=0.2)
+        return (response or "").strip()
+    except Exception as e:
+        return f"Context generation failed: {str(e)}"
+        
 def _cortex_complete_prescriptive(content: list, run_df_func, question: str) -> str:
     """Generate prescriptive insights using Azure OpenAI with middleware logging."""
     
@@ -5663,7 +5656,7 @@ if st.session_state.get('page') == 'genie':
         with st.container(border=True):
 
             # Header row with title, subtitle, and action buttons
-            header_col, btn2, btn3, btn4 = st.columns([2.2, 1, 1, 1], gap="small")
+            header_col, btn2, btn3, btn4 = st.columns([2.2, 1, 1.5, 1], gap="small")
             with header_col:
                 st.markdown("""
                 <div class="genie-assistant-header">
@@ -6423,7 +6416,7 @@ ORDER BY Sort_Order;
 
 
             # -------------------------
-            # ✅ Upload Panel (ChatGPT style)
+            # ✅ Upload Panel (Markdown file with previous chat or analysis)
             # -------------------------
             if st.session_state.show_upload:
                 with st.container():
@@ -6444,22 +6437,35 @@ ORDER BY Sort_Order;
                         parsed_chat = []
                         
                         for line in lines:
-                            if line.startswith("User:"):
+                            if line.startswith("Chat History — AI Summary"):
                                 parsed_chat.append({
-                                    "role": "user",
+                                    "Type": "Chat History",
                                     "content": line.replace("User:", "").strip()
                                 })
-                            elif line.startswith("Bot:"):
+                            elif line.startswith("Queries"):
                                 parsed_chat.append({
-                                    "role": "assistant",
-                                    "content": line.replace("Bot:", "").strip()
+                                    "Type": "Date Wise",
+                                    "content": line.replace("AI:", "").strip()
                                 })
+                        print(f"Parsed chat history: {parsed_chat}")
 
                         if parsed_chat:
                             st.session_state.loaded_chat_history = parsed_chat
-
+                        
+                        converstaion_context = generate_context_for_uploaded_file(md_content)
+                        st.session_state.upload_chat_context = converstaion_context
+                        st.session_state.conversation_resumed = True
                         st.success("✅ Chat uploaded successfully!")
-
+                        print(f"Generated conversation context: {converstaion_context}")
+                        
+                        if st.session_state.get("upload_chat_context"):
+                            st.markdown(f"""
+                            <div style='padding:14px;background:#e0f2fe;border-radius:10px;border-left:4px solid #0284c7;margin-top:16px;'>
+                                <div style='font-size:12px;font-weight:800;color:#0369a1;margin-bottom:8px;'>Conversation context from uploaded chat</div>
+                                <div style='color:#0f172a;font-size:14px;line-height:1.6;word-wrap:break-word;overflow-wrap:break-word;max-width:100%;'>{st.session_state.upload_chat_context}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
 
             # -------------------------
             # ✅ SEND LOGIC (Your existing)
