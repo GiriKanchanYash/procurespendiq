@@ -6494,16 +6494,35 @@ ORDER BY Sort_Order;
 
             # ── Context-active banner: shown BELOW input when Resume Chat was clicked ──
             if st.session_state.get("context_active_banner") and st.session_state.get("use_uploaded_context"):
-                st.markdown("""
-                <div style='display:flex;align-items:center;gap:10px;padding:10px 16px;
-                            background:#f0fdf4;border-radius:10px;border:1px solid #86efac;
-                            margin-bottom:8px;'>
-                    <span style='font-size:16px;'>✅</span>
-                    <span style='font-size:13px;color:#166534;font-weight:600;'>
-                        Context is active — your next question will include the uploaded conversation history.
-                    </span>
-                </div>
-                """, unsafe_allow_html=True)
+                banner = st.container()
+                with banner:
+                    col1, col2 = st.columns([6, 1.5])  # adjust ratio for spacing
+
+                    with col1:
+                        st.markdown(
+                            """
+                            <div style='display:flex;align-items:center;gap:10px;padding:10px 16px;
+                                        background:#f0fdf4;border-radius:10px;border:1px solid #86efac;
+                                        margin-bottom:8px;'>
+                                <span style='font-size:16px;'>✅</span>
+                                <span style='font-size:13px;color:#166534;font-weight:600;'>
+                                    Context is active — your next question will include the uploaded conversation history.
+                                </span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                    with col2:
+                        if st.button("✕ Clear Context"):
+                            st.session_state.upload_chat_context = None
+                            st.session_state.loaded_md_content = None
+                            st.session_state.show_upload = False
+                            st.session_state.context_active_banner = False
+                            st.session_state.use_uploaded_context = False
+                            st.rerun()
+            
+                
 
             # -------------------------
             # ✅ SEND LOGIC (Your existing)
