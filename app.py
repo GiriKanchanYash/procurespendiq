@@ -1109,7 +1109,7 @@ def generate_context_for_uploaded_file(file_content: str) -> str:
     prompt = f"""
                 You are analysing a previously saved chat between a user and an AI assistant. The chat is about procurement data analysis.
                 The user has uploaded the chat for you to review and provide insights on. The chat content is as follows:
-                {md_content}
+                {file_content}
                 Please review the chat and create a consise conversation memory that contains:
                 1. Main topics discussed
                 2. Key insights or conclusions reached
@@ -1273,17 +1273,22 @@ def _cortex_complete_predictive(content: list, run_df_func, question: str) -> st
         data_str = data_str[:] + "\n(truncated)"
     
     prompt = (
-        "You are a procurement business analyst with forecasting expertise. The user asked a question "
-        "and received the following data from our analytics. "
-        "Analyze this historical data and provide predictive insights: forecast trends, expected scenarios, risks ahead, and opportunities. "
-        "Be concrete: cite specific metrics, patterns, and extrapolations from the data. "
-        "Format as numbered list with each item on a NEW LINE (1. ...\n2. ...\n3. ...). "
-        "Bold ALL key predictions and timeframes using ** e.g. **likely to increase 15%**, **Q2 2026**. "
-        "Do NOT use HTML tags like <strong>. "
-        "Each numbered point must start on its own line.\n\n"
-        f"User question: {question}\n\n"
-        f"Historical Data:\n{data_str}"
+    "You are a procurement business analyst with forecasting expertise. "
+    "The user asked a question and received the following data from our analytics. "
+    "Analyze this historical data and provide predictive insights. "
+    "Your output must include: "
+    "1. Vendor-specific forecasts with **numeric projections** (e.g., counts for Q4 2024, Q1 2025). "
+    "2. **Scenario analysis**: best case, worst case, and most likely outcomes. "
+    "3. **Confidence ranges** (e.g., 70–80% likelihood). "
+    "4. Risks and opportunities tied directly to the metrics. "
+    "Format as a numbered list, each item on a NEW LINE (1. ...\\n2. ...\\n3. ...). "
+    "Bold ALL key predictions, numbers, and timeframes using ** (e.g., **increase 15%**, **Q2 2026**). "
+    "Do NOT use HTML tags. "
+    "Each numbered point must start on its own line.\n\n"
+    f"User question: {question}\n\n"
+    f"Historical Data:\n{data_str}"
     )
+
     
     try:
         result = cortex_complete(prompt, temperature=0.4, include_memory=True)
@@ -5141,6 +5146,16 @@ if st.session_state.get('page') == 'genie':
         st.session_state.query_filter_days = 7
     if "show_conversation_history" not in st.session_state:
         st.session_state.show_conversation_history = True
+    if "show_upload" not in st.session_state:
+        st.session_state.show_upload = False
+    if "upload_chat_context" not in st.session_state:
+        st.session_state.upload_chat_context = None
+    if "use_uploaded_context" not in st.session_state:
+        st.session_state.use_uploaded_context = False
+    if "context_active_banner" not in st.session_state:
+        st.session_state.context_active_banner = False
+    if "loaded_md_content" not in st.session_state:
+        st.session_state.loaded_md_content = None
 
     # Define quick analysis options - match YAML verified queries; icons as SVG (screenshot-style)
     _BAR_CHART_SVG = '''<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="14" width="4" height="6" rx="1" fill="white"/><rect x="10" y="10" width="4" height="10" rx="1" fill="white"/><rect x="16" y="6" width="4" height="14" rx="1" fill="white"/></svg>'''
@@ -6217,7 +6232,7 @@ ORDER BY Sort_Order;
                                 except Exception as e:
                                     st.error(f"Fallback query failed: {e}")
                     else:
-                        # Success - show results (decision support: Descriptive + Prescriptive when present)
+                        # Success - show results (decision support: Descriptive + Prescriptive + Predictive when present)
                         if "message" in response and "content" in response["message"]:
                             content = response["message"]["content"]
                             # Combine all text blocks first (Cortex may send interpretation + answer in separate blocks)
@@ -6380,8 +6395,7 @@ ORDER BY Sort_Order;
             st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
             
             # ✅ Init state
-            if "show_upload" not in st.session_state:
-                st.session_state.show_upload = False
+            # show_upload initialized at page load (above)
 
             # -------------------------
             # FORM UI
@@ -6525,7 +6539,7 @@ ORDER BY Sort_Order;
                 
 
             # -------------------------
-            # ✅ SEND LOGIC (Your existing)
+            # ✅ SEND LOGIC
             # -------------------------
             if send_clicked and user_query:
                 st.session_state.selected_analysis = "custom"
@@ -6543,7 +6557,9 @@ ORDER BY Sort_Order;
                     st.session_state.context_active_banner = False  # Hide banner after context is consumed
 
                 with st.spinner("Analyzing..."):
-                    _cached = cache_get(user_query.strip())
+                    # Skip cache when context is active: the enriched final_query must reach the LLM
+                    _context_active = bool(st.session_state.get("upload_chat_context") and final_query != user_query.strip())
+                    _cached = None if _context_active else cache_get(user_query.strip())
 
                     if _cached and _cached.get("result_json"):
                         import json as _json
