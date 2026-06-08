@@ -63,4 +63,4 @@ jobs:
         with:
           app-name: 'ProCureIQ'
           slot-name: 'Production'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_CC36130A3ED747A98C5C712A05344B5A }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_17078ED397E145EF8BA47BE7EED97D4F }}
