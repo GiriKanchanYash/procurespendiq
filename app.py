@@ -5791,6 +5791,32 @@ if st.session_state.get('page') == 'genie':
                     st.session_state["show_session_summary"] = False
                     st.rerun()
 
+            # ── Render context_loaded bubble in the chat box ──
+            _ctx_messages = [
+                m for m in st.session_state.get("genie_messages", [])
+                if m.get("type") == "context_loaded"
+            ]
+            if _ctx_messages:
+                import re as _re_ctx
+                _ctx_text = _ctx_messages[-1].get("content", "")
+                _ctx_html = _ctx_text.replace("\n", "<br/>")
+                _ctx_html = _re_ctx.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', _ctx_html)
+                st.markdown(f"""
+                <div style="display:flex;flex-direction:column;align-items:flex-start;margin-bottom:16px;">
+                    <div style="font-size:11px;font-weight:700;color:#0369a1;margin-bottom:4px;margin-left:4px;">
+                        📋 Context Loaded from Uploaded Chat
+                    </div>
+                    <div style="background:#e0f2fe;color:#0f172a;border-radius:18px 18px 18px 4px;
+                                padding:14px 18px;max-width:90%;font-size:13px;line-height:1.7;
+                                border-left:4px solid #0284c7;word-wrap:break-word;overflow-wrap:break-word;">
+                        {_ctx_html}
+                    </div>
+                    <div style="font-size:11px;color:#64748b;margin-top:6px;margin-left:4px;">
+                        ✅ Context is active — all your questions include this history until you clear it.
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
             # Display loaded chat history from a specific date - takes priority
             if st.session_state.get("show_loaded_chat_history", False):
                 chat_date = st.session_state.get("loaded_chat_date", "")
@@ -6467,50 +6493,50 @@ ORDER BY Sort_Order;
 
                         if parsed_chat:
                             st.session_state.loaded_chat_history = parsed_chat
-                        
-                        converstaion_context = generate_context_for_uploaded_file(md_content)
+
+                        with st.spinner("Generating context from uploaded chat..."):
+                            converstaion_context = generate_context_for_uploaded_file(md_content)
+
                         st.session_state.upload_chat_context = converstaion_context
                         st.session_state.conversation_resumed = True
-                        st.success("✅ Chat uploaded successfully! Context generated below.")
+
+                        # ── Auto-activate context (no Resume Chat button needed) ──
+                        st.session_state.use_uploaded_context = True
+                        st.session_state.context_active_banner = True
+                        st.session_state.show_upload = False   # close upload panel
+
+                        # ── Inject context as an AI bubble directly into the chat messages ──
+                        if "genie_messages" not in st.session_state:
+                            st.session_state.genie_messages = []
+                        st.session_state.genie_messages.append({
+                            "role": "assistant",
+                            "type": "context_loaded",
+                            "content": converstaion_context,
+                        })
+
                         print(f"Generated conversation context: {converstaion_context}")
+                        st.rerun()
 
-                    # ── Show context card + action buttons inline (always visible while panel is open) ──
+                    # ── Show a "Clear Context" button while panel is open and context exists ──
                     if st.session_state.get("upload_chat_context"):
-                        _ctx = st.session_state.upload_chat_context
-                        st.markdown(f"""
-                        <div style='padding:16px;background:#e0f2fe;border-radius:12px;
-                                    border-left:4px solid #0284c7;margin-top:12px;margin-bottom:4px;'>
-                            <div style='font-size:13px;font-weight:800;color:#0369a1;margin-bottom:8px;'>
-                                📋 Conversation Context Loaded
-                            </div>
-                            <div style='color:#0f172a;font-size:13px;line-height:1.6;
-                                        word-wrap:break-word;overflow-wrap:break-word;max-width:100%;'>
-                                {_ctx}
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        if st.button("✕ Clear Context", use_container_width=True, key="btn_clear_context"):
+                            st.session_state.upload_chat_context = None
+                            st.session_state.loaded_md_content = None
+                            st.session_state.show_upload = False
+                            st.session_state.context_active_banner = False
+                            st.session_state.use_uploaded_context = False
+                            # Remove context bubble from chat
+                            st.session_state.genie_messages = [
+                                m for m in st.session_state.get("genie_messages", [])
+                                if m.get("type") != "context_loaded"
+                            ]
+                            st.rerun()
 
-                        # FIX 2 — Resume Chat: show active-banner + close panel so user can type
-                        _col_res, _col_clr = st.columns(2, gap="small")
-                        with _col_res:
-                            if st.button("🔄 Resume Chat", use_container_width=True, key="btn_resume_context"):
-                                st.session_state.use_uploaded_context = True
-                                st.session_state.show_upload = False          # close panel
-                                st.session_state.context_active_banner = True  # show inline banner
-                                st.rerun()
-                        with _col_clr:
-                            if st.button("✕ Clear Context", use_container_width=True, key="btn_clear_context"):
-                                st.session_state.upload_chat_context = None
-                                st.session_state.loaded_md_content = None
-                                st.session_state.show_upload = False
-                                st.session_state.context_active_banner = False
-                                st.rerun()
-
-            # ── Context-active banner: shown BELOW input when Resume Chat was clicked ──
+            # ── Context-active banner: compact indicator below input ──
             if st.session_state.get("context_active_banner") and st.session_state.get("use_uploaded_context"):
                 banner = st.container()
                 with banner:
-                    col1, col2 = st.columns([6, 1.5])  # adjust ratio for spacing
+                    col1, col2 = st.columns([6, 1.5])
 
                     with col1:
                         st.markdown(
@@ -6520,7 +6546,7 @@ ORDER BY Sort_Order;
                                         margin-bottom:8px;'>
                                 <span style='font-size:16px;'>✅</span>
                                 <span style='font-size:13px;color:#166534;font-weight:600;'>
-                                    Context is active — your next question will include the uploaded conversation history.
+                                    Context is active — all your questions include the uploaded conversation history.
                                 </span>
                             </div>
                             """,
@@ -6534,6 +6560,11 @@ ORDER BY Sort_Order;
                             st.session_state.show_upload = False
                             st.session_state.context_active_banner = False
                             st.session_state.use_uploaded_context = False
+                            # Remove context bubble from chat
+                            st.session_state.genie_messages = [
+                                m for m in st.session_state.get("genie_messages", [])
+                                if m.get("type") != "context_loaded"
+                            ]
                             st.rerun()
             
                 
@@ -6548,13 +6579,12 @@ ORDER BY Sort_Order;
                 st.session_state.show_conversation_history = True
                 st.session_state.genie_input_version += 1
                 
-                # ✅ Prepend uploaded context if resuming chat
+                # ✅ Prepend uploaded context if active — kept alive for ALL questions
                 final_query = user_query.strip()
                 if st.session_state.get("use_uploaded_context") and st.session_state.get("upload_chat_context"):
                     context = st.session_state.get("upload_chat_context", "").strip()
                     final_query = f"Based on this conversation context:\n\n{context}\n\n{final_query}"
-                    st.session_state.use_uploaded_context = False  # Clear flag after use
-                    st.session_state.context_active_banner = False  # Hide banner after context is consumed
+                    # ── Do NOT clear use_uploaded_context; context stays active until user clears it ──
 
                 with st.spinner("Analyzing..."):
                     # Skip cache when context is active: the enriched final_query must reach the LLM
