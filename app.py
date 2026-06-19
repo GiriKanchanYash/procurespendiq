@@ -4274,7 +4274,7 @@ _run_startup_db_checks()
 
 # Persist dashboard filters: restore from query params when present (so they survive page navigation)
 if 'preset' not in st.session_state:
-    st.session_state.preset = "Last 30 Days"
+    st.session_state.preset = "YTD"
 # Filters are persisted in _dash_* session state keys (non-widget keys survive page navigation)
 
 def _get_current_user_display() -> str:
@@ -4324,14 +4324,14 @@ if st.session_state.page == 'dashboard':
 
     # ---------- Controls (Date, Vendor, Preset) ----------
     if "preset" not in st.session_state:
-        st.session_state.preset = "Last 30 Days"
+        st.session_state.preset = "YTD"
 
     col_date, col_vendor, col_presets = st.columns([1, 1, 1.8], gap="small")
 
     with col_date:
         # Ensure preset is initialized from saved state
         if 'preset' not in st.session_state:
-            st.session_state.preset = st.session_state.get("_dash_preset_saved", "Last 30 Days")
+            st.session_state.preset = st.session_state.get("_dash_preset_saved", "YTD")
         
         current_preset = st.session_state.get('preset', 'Last 30 Days')
         
@@ -4414,12 +4414,12 @@ if st.session_state.page == 'dashboard':
     # Persist filter values to non-widget keys (survive widget cleanup on other pages)
     st.session_state._dash_vendor_saved = vendor
     st.session_state._dash_date_range_saved = (rng_start, rng_end)
-    st.session_state._dash_preset_saved = st.session_state.get("preset", "Last 30 Days")
+    st.session_state._dash_preset_saved = st.session_state.get("preset", "YTD")
 
     with col_presets:
         # Restore preset from persistent saved state if not already set
         if 'preset' not in st.session_state:
-            st.session_state.preset = st.session_state.get("_dash_preset_saved", "Last 30 Days")
+            st.session_state.preset = st.session_state.get("_dash_preset_saved", "YTD")
         
         preset = st.session_state.get('preset', 'Last 30 Days')
         presets = ["Last 30 Days", "QTD", "YTD", "Custom"]
@@ -6427,17 +6427,20 @@ ORDER BY Sort_Order;
             # -------------------------
             # FORM UI
             # -------------------------
-            with st.form("genie_question_form", clear_on_submit=False):
-                col_plus, col_input, col_send = st.columns([0.06, 0.86, 0.08], gap="small")
+            col_plus, col_main = st.columns([0.06, 0.94], gap="small")
 
-                # ➕ Button (toggle upload panel)
-                with col_plus:
-                    plus_clicked = st.form_submit_button("➕",
-                                    help="Upload a previous chat or analysis"
-                                            )
+            # Upload button OUTSIDE form
+            with col_plus:
+                plus_clicked = st.button(
+                    "➕",
+                    help="Upload a previous chat or analysis",
+                    key="upload_btn"
+                )
 
-                # Input box
-                with col_input:
+            # Only ONE form
+            with col_main:
+                with st.form("genie_question_form", clear_on_submit=False):
+
                     user_query = st.text_input(
                         "Ask a question",
                         placeholder="Ask a question about your procurement data...",
@@ -6445,14 +6448,12 @@ ORDER BY Sort_Order;
                         key=f"genie_chat_input_{st.session_state.genie_input_version}"
                     )
 
-                # Send button
-                with col_send:
                     send_clicked = st.form_submit_button(
                         "➤",
                         use_container_width=True,
                         help="Press Enter or click to send"
                     )
-
+                    
             # ✅ Toggle upload panel
             if plus_clicked:
                 st.session_state.show_upload = not st.session_state.show_upload
