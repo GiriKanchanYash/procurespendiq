@@ -3123,11 +3123,11 @@ ORDER BY
                 # Match semantic model question for payment_timing_recommendation
                 "question": "What is the optimal payment timing strategy for this week?",
             },
-            {
-                "label": "Late payment trend and risk",
-                # Match semantic model question for late_payment_trend_forecast
-                "question": "Show late payment trend for forecasting",
-            },
+            # {
+            #     "label": "Late payment trend and risk",
+            #     # Match semantic model question for late_payment_trend_forecast
+            #     "question": "Show late payment trend for forecasting",
+            # },
         ]
 
         # Render playbook as vertical buttons
