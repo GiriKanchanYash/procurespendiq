@@ -2187,6 +2187,53 @@ def load_clean_ui_light():
       background: #007BFF !important;
       border: none !important;
     }
+
+    /* Genie chat input: text field + compact send button on one row */
+    form:has(.genie-chat-input-marker) {
+      border: 1.5px solid #e2e8f0 !important;
+      border-radius: 12px !important;
+      padding: 6px 8px !important;
+      background: #fff !important;
+      box-shadow: none !important;
+    }
+    form:has(.genie-chat-input-marker) [data-testid="stHorizontalBlock"] {
+      align-items: center !important;
+      gap: 6px !important;
+    }
+    form:has(.genie-chat-input-marker) [data-testid="stTextInput"] > div > div {
+      border: none !important;
+      box-shadow: none !important;
+      background: transparent !important;
+    }
+    form:has(.genie-chat-input-marker) [data-testid="stTextInput"] input {
+      border: none !important;
+      box-shadow: none !important;
+      background: transparent !important;
+      padding: 8px 4px !important;
+    }
+    form:has(.genie-chat-input-marker) [data-testid="stFormSubmitButton"] {
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+    form:has(.genie-chat-input-marker) [data-testid="stFormSubmitButton"] > button {
+      width: 38px !important;
+      min-width: 38px !important;
+      max-width: 38px !important;
+      height: 38px !important;
+      padding: 0 !important;
+      border-radius: 10px !important;
+      background: #007BFF !important;
+      color: #fff !important;
+      font-size: 16px !important;
+      border: none !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      line-height: 1 !important;
+    }
+    
+
+
         /* ============================================= */
     /* NEW: "Cover Line" / Boxed Sections            */
     /* ============================================= */
@@ -6437,23 +6484,33 @@ ORDER BY Sort_Order;
                     key="upload_btn"
                 )
 
-            # Only ONE form
-            with col_main:
-                with st.form("genie_question_form", clear_on_submit=False):
-
-                    user_query = st.text_input(
-                        "Ask a question",
-                        placeholder="Ask a question about your procurement data...",
-                        label_visibility="collapsed",
-                        key=f"genie_chat_input_{st.session_state.genie_input_version}"
-                    )
-
-                    send_clicked = st.form_submit_button(
-                        "➤",
-                        use_container_width=True,
-                        help="Press Enter or click to send"
-                    )
                     
+                with col_main:
+                    with st.form("genie_question_form", clear_on_submit=False):
+                        st.markdown(
+                            '<div class="genie-chat-input-marker" aria-hidden="true"></div>',
+                            unsafe_allow_html=True,
+                        )
+    
+                        col_input, col_send = st.columns(
+                            [11, 1], gap="small", vertical_alignment="center"
+                        )
+                        with col_input:
+                            user_query = st.text_input(
+                                "Ask a question",
+                                placeholder="Ask a question about your procurement data...",
+                                label_visibility="collapsed",
+                                key=f"genie_chat_input_{st.session_state.genie_input_version}",
+                            )
+                        with col_send:
+                            send_clicked = st.form_submit_button(
+                                "➤",
+                                use_container_width=True,
+                                help="Press Enter or click to send",
+                            )
+
+
+
             # ✅ Toggle upload panel
             if plus_clicked:
                 st.session_state.show_upload = not st.session_state.show_upload
